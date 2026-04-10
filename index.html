@@ -5336,17 +5336,30 @@ async function _syncCore() {
     Object.assign(DATA.descSaved   ||= {}, localDesc);
     Object.assign(DATA.statusSaved ||= {}, localStatus);
 
-    // 1 único fetch para buscar todos os tickets
+    // Busca todos os tickets ativos no TicketFlow
     const r = await fetch(TICKET_API + '?action=getAll&t=' + Date.now(), {method:'GET', redirect:'follow'});
     const d = _parseJSON(await r.text());
     const allT = d?.tickets || d || [];
-    const tickets = allT.filter(t => !t.deleted && t.assunto?.startsWith('Recontato:'));
+
+    // Monta mapa de nomes de clientes para lookup rápido
+    const clienteNomes = new Set(allClientsConsolidated().map(c => c.nome.trim().toUpperCase()));
+
+    // Aceita tickets de QUALQUER origem (CRM ou TicketFlow direto):
+    // 1. Criados pelo CRM: assunto começa com "Recontato:"
+    // 2. Criados no TicketFlow: campo "empresa" bate com nome de cliente
+    const tickets = allT.filter(t => {
+      if (t.deleted) return false;
+      if (t.assunto?.startsWith('Recontato:')) return true;
+      // Ticket criado direto no TicketFlow — verifica campo empresa
+      const emp = (t.empresa || '').trim().toUpperCase();
+      return emp && clienteNomes.has(emp);
+    });
     if (!tickets.length) return 0;
 
     const statusLabels = { 'aberto':'Aberto', 'em-andamento':'Em Andamento', 'aguardando':'Aguardando', 'finalizado':'Finalizado' };
     const hoje = new Date().toLocaleDateString('pt-BR');
 
-    // Busca TODOS os comentários em paralelo (era o gargalo: 1 fetch sequencial por ticket)
+    // Busca TODOS os comentários em paralelo
     const commentResults = await Promise.allSettled(
       tickets.map(t =>
         fetch(TICKET_API + '?action=getComments&ticketId=' + encodeURIComponent(t.id) + '&t=' + Date.now(), {method:'GET', redirect:'follow'})
@@ -5358,7 +5371,16 @@ async function _syncCore() {
 
     let n = 0;
     tickets.forEach((t, i) => {
-      const nome = (t.assunto || '').slice(10).trim();
+      // Resolve nome do cliente: CRM usa assunto "Recontato: NOME", TicketFlow usa campo empresa
+      let nome = '';
+      if (t.assunto?.startsWith('Recontato:')) {
+        nome = (t.assunto || '').slice(10).trim();
+      } else {
+        // Ticket direto do TicketFlow — busca nome exato pelo campo empresa
+        const emp = (t.empresa || '').trim().toUpperCase();
+        const match = allClientsConsolidated().find(c => c.nome.trim().toUpperCase() === emp);
+        nome = match ? match.nome : (t.empresa || '').trim();
+      }
       if (!nome) return;
 
       // Prioriza localStorage sobre memória
@@ -5372,48 +5394,64 @@ async function _syncCore() {
         localStatus[nome] = t.status || 'aberto';
         DATA.descSaved[nome] = (t.desc || '').trim();
         localDesc[nome] = (t.desc || '').trim();
-        return; // forEach usa return em vez de continue
+        return;
       }
 
       let obs = DATA.obs[nome] || '';
       let changed = false;
 
+      // Prefixo de identificação do ticket (assunto + responsável)
+      const ticketLabel = t.assunto?.startsWith('Recontato:')
+        ? (t.resp || 'Vendedor')
+        : (t.resp || 'Vendedor') + ' [' + (t.assunto || 'Ticket').slice(0, 30) + ']';
+
       // 1. Status
       const statusAtual = t.status || 'aberto';
-      const statusSalvo = DATA.statusSaved[nome] || '';
+      // Chave única por ticket para não misturar status de tickets diferentes
+      const statusKey = nome + '::' + t.id;
+      const statusSalvo = (DATA.statusSaved || {})[statusKey] || (DATA.statusSaved || {})[nome] || '';
       if (statusAtual !== statusSalvo) {
         if (statusSalvo !== '') {
-          const linha = hoje + ' — ' + (t.resp || 'Vendedor') + ' moveu para: ' + (statusLabels[statusAtual] || statusAtual);
+          const linha = hoje + ' — ' + ticketLabel + ' moveu para: ' + (statusLabels[statusAtual] || statusAtual);
           if (!obs.includes(linha)) { obs = (obs ? obs + '\n' : '') + linha; changed = true; }
         }
-        DATA.statusSaved[nome] = statusAtual;
+        if (!DATA.statusSaved) DATA.statusSaved = {};
+        DATA.statusSaved[statusKey] = statusAtual;
+        DATA.statusSaved[nome] = statusAtual; // compatibilidade
+        localStatus[statusKey] = statusAtual;
         localStatus[nome] = statusAtual;
       }
 
       // 2. Descrição
       const descAtual = (t.desc || '').trim();
-      const descSalvo = DATA.descSaved[nome] || '';
+      const descKey = nome + '::' + t.id;
+      const descSalvo = (DATA.descSaved || {})[descKey] || (DATA.descSaved || {})[nome] || '';
       if (descAtual && descAtual !== descSalvo && !obs.includes(descAtual)) {
-        obs = (obs ? obs + '\n' : '') + hoje + ' — ' + (t.resp || '?') + ' atualizou: ' + descAtual;
+        obs = (obs ? obs + '\n' : '') + hoje + ' — ' + ticketLabel + ' atualizou: ' + descAtual;
+        if (!DATA.descSaved) DATA.descSaved = {};
+        DATA.descSaved[descKey] = descAtual;
         DATA.descSaved[nome] = descAtual;
+        localDesc[descKey] = descAtual;
         localDesc[nome] = descAtual;
         changed = true;
       }
 
-      // 3. Comentários (resultado já veio em paralelo)
+      // 3. Comentários
       const cm = commentResults[i]?.value;
       const list = Array.isArray(cm) ? cm : Array.isArray(cm?.comments) ? cm.comments : [];
       for (const c of list) {
         const txt = (c.text || '').trim();
         if (!txt || obs.includes(txt)) continue;
         const dData = c.createdAt ? new Date(c.createdAt).toLocaleDateString('pt-BR') : hoje;
-        obs = (obs ? obs + '\n' : '') + dData + ' — ' + (c.author || '?') + ': ' + txt;
+        const autor = c.author || ticketLabel;
+        obs = (obs ? obs + '\n' : '') + dData + ' — ' + autor + ': ' + txt;
         changed = true;
       }
 
       // 4. Finalizado
-      if ((t.status === 'finalizado' || t.archived === 'sim') && !obs.includes('✅ Ticket finalizado')) {
-        obs = (obs ? obs + '\n' : '') + hoje + ' — ✅ Ticket finalizado';
+      const finKey = '✅ Ticket finalizado [' + t.id + ']';
+      if ((t.status === 'finalizado' || t.archived === 'sim') && !obs.includes(finKey) && !obs.includes('✅ Ticket finalizado')) {
+        obs = (obs ? obs + '\n' : '') + hoje + ' — ' + finKey;
         changed = true;
       }
 
