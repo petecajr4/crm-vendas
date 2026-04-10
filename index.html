@@ -4987,92 +4987,108 @@ async function enviarTicket(nome) {
 
 
 // ==================== SYNC TICKETS ====================
+function _parseJSON(txt) {
+  try { return JSON.parse(txt); } catch(_) {
+    const s = txt.indexOf('{') >= 0 ? txt.indexOf('{') : txt.indexOf('[');
+    if (s !== -1) { try { return JSON.parse(txt.slice(s)); } catch(_){} }
+  }
+  return null;
+}
+
 async function _syncCore() {
   try {
-    try { const s = localStorage.getItem('crm_obs'); if(s) Object.assign(DATA.obs, JSON.parse(s)); } catch(e){}
-    try { const ds = localStorage.getItem('crm_desc'); if(ds) Object.assign(DATA.descSaved||{}, JSON.parse(ds)); } catch(e){}
-    try { const ss = localStorage.getItem('crm_status'); if(ss) Object.assign(DATA.statusSaved||{}, JSON.parse(ss)); } catch(e){}
+    // Carrega localStorage de uma vez
+    let localObs={}, localDesc={}, localStatus={};
+    try { localObs   = JSON.parse(localStorage.getItem('crm_obs')    || '{}'); } catch(e){}
+    try { localDesc  = JSON.parse(localStorage.getItem('crm_desc')   || '{}'); } catch(e){}
+    try { localStatus= JSON.parse(localStorage.getItem('crm_status') || '{}'); } catch(e){}
+    Object.assign(DATA.obs,        localObs);
+    Object.assign(DATA.descSaved   ||= {}, localDesc);
+    Object.assign(DATA.statusSaved ||= {}, localStatus);
 
-    const r = await fetch(TICKET_API + '?action=getAll&t=' + Date.now(), {method:'GET',redirect:'follow'});
-    const txt = await r.text();
-    let d; try{d=JSON.parse(txt);}catch(_){const s=txt.indexOf('{')>=0?txt.indexOf('{'):txt.indexOf('[');if(s!==-1)d=JSON.parse(txt.slice(s));}
-    const allT = d?.tickets||d||[];
-    const tickets = allT.filter(t=>!t.deleted&&t.assunto&&t.assunto.startsWith('Recontato:'));
-    if(!tickets.length) return 0;
+    // 1 único fetch para buscar todos os tickets
+    const r = await fetch(TICKET_API + '?action=getAll&t=' + Date.now(), {method:'GET', redirect:'follow'});
+    const d = _parseJSON(await r.text());
+    const allT = d?.tickets || d || [];
+    const tickets = allT.filter(t => !t.deleted && t.assunto?.startsWith('Recontato:'));
+    if (!tickets.length) return 0;
 
-    if(!DATA.obs) DATA.obs={};
-    if(!DATA.descSaved) DATA.descSaved={};
-    if(!DATA.statusSaved) DATA.statusSaved={};
-    let n=0;
+    const statusLabels = { 'aberto':'Aberto', 'em-andamento':'Em Andamento', 'aguardando':'Aguardando', 'finalizado':'Finalizado' };
+    const hoje = new Date().toLocaleDateString('pt-BR');
 
-    const statusLabels = {
-      'aberto':'Aberto',
-      'em-andamento':'Em Andamento',
-      'aguardando':'Aguardando',
-      'finalizado':'Finalizado'
-    };
+    // Busca TODOS os comentários em paralelo (era o gargalo: 1 fetch sequencial por ticket)
+    const commentResults = await Promise.allSettled(
+      tickets.map(t =>
+        fetch(TICKET_API + '?action=getComments&ticketId=' + encodeURIComponent(t.id) + '&t=' + Date.now(), {method:'GET', redirect:'follow'})
+          .then(res => res.text())
+          .then(txt => _parseJSON(txt))
+          .catch(() => null)
+      )
+    );
 
-    for(const t of tickets){
-      const nome=(t.assunto||'').slice(10).trim();
-      if(!nome) continue;
+    let n = 0;
+    tickets.forEach((t, i) => {
+      const nome = (t.assunto || '').slice(10).trim();
+      if (!nome) return;
 
-      try{ const s=localStorage.getItem('crm_obs'); if(s){const p=JSON.parse(s);if(p[nome])DATA.obs[nome]=p[nome];} }catch(e){}
-      try{ const ds=localStorage.getItem('crm_desc'); if(ds){const p=JSON.parse(ds);if(p[nome])DATA.descSaved[nome]=p[nome];} }catch(e){}
-      try{ const ss=localStorage.getItem('crm_status'); if(ss){const p=JSON.parse(ss);if(p[nome])DATA.statusSaved[nome]=p[nome];} }catch(e){}
+      // Prioriza localStorage sobre memória
+      if (localObs[nome])    DATA.obs[nome]          = localObs[nome];
+      if (localDesc[nome])   DATA.descSaved[nome]    = localDesc[nome];
+      if (localStatus[nome]) DATA.statusSaved[nome]  = localStatus[nome];
 
-      let obs=DATA.obs[nome]||'';
-      let changed=false;
-      const hoje=new Date().toLocaleDateString('pt-BR');
+      let obs = DATA.obs[nome] || '';
+      let changed = false;
 
-      // 1. Status change (Iniciar atendimento, Aguardando, Finalizado)
-      const statusAtual = t.status||'aberto';
-      const statusSalvo = DATA.statusSaved[nome]||'';
-      if(statusAtual !== statusSalvo && statusSalvo !== '') {
-        const label = statusLabels[statusAtual] || statusAtual;
-        const linha = hoje+' — '+( t.resp||'Vendedor')+' moveu para: '+label;
-        if(!obs.includes(linha)) { obs=(obs?obs+'\n':'')+linha; changed=true; }
-      }
-      if(statusAtual !== statusSalvo) {
-        DATA.statusSaved[nome] = statusAtual;
-        try{ const ss=JSON.parse(localStorage.getItem('crm_status')||'{}'); ss[nome]=statusAtual; localStorage.setItem('crm_status',JSON.stringify(ss)); }catch(e){}
-      }
-
-      // 2. Desc change (Salvar ticket)
-      const descAtual=(t.desc||'').trim();
-      const descSalvo=DATA.descSaved[nome]||'';
-      if(descAtual && descAtual!==descSalvo && !obs.includes(descAtual)){
-        obs=(obs?obs+'\n':'')+hoje+' — '+(t.resp||'?')+' atualizou: '+descAtual;
-        DATA.descSaved[nome]=descAtual;
-        try{ const ds=JSON.parse(localStorage.getItem('crm_desc')||'{}'); ds[nome]=descAtual; localStorage.setItem('crm_desc',JSON.stringify(ds)); }catch(e){}
-        changed=true;
-      }
-
-      // 3. Comments (Conversa do Ticket)
-      try{
-        const rc=await fetch(TICKET_API+'?action=getComments&ticketId='+encodeURIComponent(t.id)+'&t='+Date.now(),{method:'GET',redirect:'follow'});
-        const tc=await rc.text();
-        let cm; try{cm=JSON.parse(tc);}catch(_){const s=tc.indexOf('{')>=0?tc.indexOf('{'):tc.indexOf('[');if(s!==-1)cm=JSON.parse(tc.slice(s));}
-        const list=Array.isArray(cm)?cm:Array.isArray(cm?.comments)?cm.comments:[];
-        for(const c of list){
-          const txt=(c.text||'').trim();
-          if(!txt||obs.includes(txt)) continue;
-          const dData=c.createdAt?new Date(c.createdAt).toLocaleDateString('pt-BR'):hoje;
-          obs=(obs?obs+'\n':'')+dData+' — '+(c.author||'?')+': '+txt;
-          changed=true;
+      // 1. Status
+      const statusAtual = t.status || 'aberto';
+      const statusSalvo = DATA.statusSaved[nome] || '';
+      if (statusAtual !== statusSalvo) {
+        if (statusSalvo !== '') {
+          const linha = hoje + ' — ' + (t.resp || 'Vendedor') + ' moveu para: ' + (statusLabels[statusAtual] || statusAtual);
+          if (!obs.includes(linha)) { obs = (obs ? obs + '\n' : '') + linha; changed = true; }
         }
-      }catch(e){}
+        DATA.statusSaved[nome] = statusAtual;
+        localStatus[nome] = statusAtual;
+      }
+
+      // 2. Descrição
+      const descAtual = (t.desc || '').trim();
+      const descSalvo = DATA.descSaved[nome] || '';
+      if (descAtual && descAtual !== descSalvo && !obs.includes(descAtual)) {
+        obs = (obs ? obs + '\n' : '') + hoje + ' — ' + (t.resp || '?') + ' atualizou: ' + descAtual;
+        DATA.descSaved[nome] = descAtual;
+        localDesc[nome] = descAtual;
+        changed = true;
+      }
+
+      // 3. Comentários (resultado já veio em paralelo)
+      const cm = commentResults[i]?.value;
+      const list = Array.isArray(cm) ? cm : Array.isArray(cm?.comments) ? cm.comments : [];
+      for (const c of list) {
+        const txt = (c.text || '').trim();
+        if (!txt || obs.includes(txt)) continue;
+        const dData = c.createdAt ? new Date(c.createdAt).toLocaleDateString('pt-BR') : hoje;
+        obs = (obs ? obs + '\n' : '') + dData + ' — ' + (c.author || '?') + ': ' + txt;
+        changed = true;
+      }
 
       // 4. Finalizado
-      if((t.status==='finalizado'||t.archived==='sim')&&!obs.includes('✅ Ticket finalizado')){
-        obs=(obs?obs+'\n':'')+hoje+' — ✅ Ticket finalizado';
-        changed=true;
+      if ((t.status === 'finalizado' || t.archived === 'sim') && !obs.includes('✅ Ticket finalizado')) {
+        obs = (obs ? obs + '\n' : '') + hoje + ' — ✅ Ticket finalizado';
+        changed = true;
       }
 
-      if(changed){DATA.obs[nome]=obs;n++;}
+      if (changed) { DATA.obs[nome] = obs; n++; }
+    });
+
+    // Salva localStorage uma vez só no final
+    if (n > 0) {
+      try { localStorage.setItem('crm_status', JSON.stringify(localStatus)); } catch(e){}
+      try { localStorage.setItem('crm_desc',   JSON.stringify(localDesc));   } catch(e){}
+      persistObs();
     }
-    if(n>0) persistObs();
     return n;
-  }catch(e){return 0;}
+  } catch(e) { return 0; }
 }
 
 
