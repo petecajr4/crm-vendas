@@ -4980,39 +4980,64 @@ async function enviarTicket(nome) {
 async function _syncCore() {
   try {
     try { const s = localStorage.getItem('crm_obs'); if(s) Object.assign(DATA.obs, JSON.parse(s)); } catch(e){}
+    try { const ds = localStorage.getItem('crm_desc'); if(ds) Object.assign(DATA.descSaved||{}, JSON.parse(ds)); } catch(e){}
+    try { const ss = localStorage.getItem('crm_status'); if(ss) Object.assign(DATA.statusSaved||{}, JSON.parse(ss)); } catch(e){}
+
     const r = await fetch(TICKET_API + '?action=getAll&t=' + Date.now(), {method:'GET',redirect:'follow'});
     const txt = await r.text();
     let d; try{d=JSON.parse(txt);}catch(_){const s=txt.indexOf('{')>=0?txt.indexOf('{'):txt.indexOf('[');if(s!==-1)d=JSON.parse(txt.slice(s));}
     const tickets = (d?.tickets||d||[]).filter(t=>!t.deleted&&t.assunto&&t.assunto.startsWith('Recontato:'));
     if(!tickets.length) return 0;
+
     if(!DATA.obs) DATA.obs={};
     if(!DATA.descSaved) DATA.descSaved={};
+    if(!DATA.statusSaved) DATA.statusSaved={};
     let n=0;
+
+    const statusLabels = {
+      'aberto':'Aberto',
+      'em-andamento':'Em Andamento',
+      'aguardando':'Aguardando',
+      'finalizado':'Finalizado'
+    };
+
     for(const t of tickets){
       const nome=(t.assunto||'').slice(10).trim();
       if(!nome) continue;
+
+      // Refresh from localStorage
       try{ const s=localStorage.getItem('crm_obs'); if(s){const p=JSON.parse(s);if(p[nome])DATA.obs[nome]=p[nome];} }catch(e){}
+      try{ const ds=localStorage.getItem('crm_desc'); if(ds){const p=JSON.parse(ds);if(p[nome])DATA.descSaved[nome]=p[nome];} }catch(e){}
+      try{ const ss=localStorage.getItem('crm_status'); if(ss){const p=JSON.parse(ss);if(p[nome])DATA.statusSaved[nome]=p[nome];} }catch(e){}
+
       let obs=DATA.obs[nome]||'';
       let changed=false;
+      const hoje=new Date().toLocaleDateString('pt-BR');
 
-      // 1. Sync ticket DESC field — detect when vendor edits and saves ticket
-      const descAtual = (t.desc||'').trim();
-      // Load descSaved from localStorage fresh each time
-      try {
-        const ds = localStorage.getItem('crm_desc');
-        if(ds) { const dp = JSON.parse(ds); if(dp[nome]) DATA.descSaved[nome] = dp[nome]; }
-      } catch(e){}
-      const descSalvo = DATA.descSaved[nome] || '';
-      // Add desc to obs if: has content, changed since last seen, AND not already in obs
-      if(descAtual && descAtual !== descSalvo && !obs.includes(descAtual)) {
-        const dData = new Date().toLocaleDateString('pt-BR');
-        const resp = t.resp || '?';
-        obs=(obs?obs+'\n':'')+dData+' — '+resp+' atualizou: '+descAtual;
-        DATA.descSaved[nome] = descAtual;
+      // 1. Status change (Iniciar atendimento, Aguardando, Finalizado)
+      const statusAtual = t.status||'aberto';
+      const statusSalvo = DATA.statusSaved[nome]||'';
+      if(statusAtual !== statusSalvo && statusSalvo !== '') {
+        const label = statusLabels[statusAtual] || statusAtual;
+        const linha = hoje+' — '+( t.resp||'Vendedor')+' moveu para: '+label;
+        if(!obs.includes(linha)) { obs=(obs?obs+'\n':'')+linha; changed=true; }
+      }
+      if(statusAtual !== statusSalvo) {
+        DATA.statusSaved[nome] = statusAtual;
+        try{ const ss=JSON.parse(localStorage.getItem('crm_status')||'{}'); ss[nome]=statusAtual; localStorage.setItem('crm_status',JSON.stringify(ss)); }catch(e){}
+      }
+
+      // 2. Desc change (Salvar ticket)
+      const descAtual=(t.desc||'').trim();
+      const descSalvo=DATA.descSaved[nome]||'';
+      if(descAtual && descAtual!==descSalvo && !obs.includes(descAtual)){
+        obs=(obs?obs+'\n':'')+hoje+' — '+(t.resp||'?')+' atualizou: '+descAtual;
+        DATA.descSaved[nome]=descAtual;
+        try{ const ds=JSON.parse(localStorage.getItem('crm_desc')||'{}'); ds[nome]=descAtual; localStorage.setItem('crm_desc',JSON.stringify(ds)); }catch(e){}
         changed=true;
       }
 
-      // 2. Sync comments (chat messages)
+      // 3. Comments (Conversa do Ticket)
       try{
         const rc=await fetch(TICKET_API+'?action=getComments&ticketId='+encodeURIComponent(t.id)+'&t='+Date.now(),{method:'GET',redirect:'follow'});
         const tc=await rc.text();
@@ -5021,15 +5046,15 @@ async function _syncCore() {
         for(const c of list){
           const txt=(c.text||'').trim();
           if(!txt||obs.includes(txt)) continue;
-          const dData=c.createdAt?new Date(c.createdAt).toLocaleDateString('pt-BR'):new Date().toLocaleDateString('pt-BR');
+          const dData=c.createdAt?new Date(c.createdAt).toLocaleDateString('pt-BR'):hoje;
           obs=(obs?obs+'\n':'')+dData+' — '+(c.author||'?')+': '+txt;
           changed=true;
         }
       }catch(e){}
 
-      // 3. Mark finalizado once
+      // 4. Finalizado
       if((t.status==='finalizado'||t.archived==='sim')&&!obs.includes('✅ Ticket finalizado')){
-        obs=(obs?obs+'\n':'')+new Date().toLocaleDateString('pt-BR')+' — ✅ Ticket finalizado';
+        obs=(obs?obs+'\n':'')+hoje+' — ✅ Ticket finalizado';
         changed=true;
       }
 
