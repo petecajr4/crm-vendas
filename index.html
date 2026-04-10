@@ -4995,13 +4995,19 @@ async function _syncCore() {
       let obs=DATA.obs[nome]||'';
       let changed=false;
 
-      // 1. Sync ticket DESC field — registers when vendor saves/edits ticket
+      // 1. Sync ticket DESC field — detect when vendor edits and saves ticket
       const descAtual = (t.desc||'').trim();
+      // Load descSaved from localStorage fresh each time
+      try {
+        const ds = localStorage.getItem('crm_desc');
+        if(ds) { const dp = JSON.parse(ds); if(dp[nome]) DATA.descSaved[nome] = dp[nome]; }
+      } catch(e){}
       const descSalvo = DATA.descSaved[nome] || '';
+      // Add desc to obs if: has content, changed since last seen, AND not already in obs
       if(descAtual && descAtual !== descSalvo && !obs.includes(descAtual)) {
         const dData = new Date().toLocaleDateString('pt-BR');
         const resp = t.resp || '?';
-        obs=(obs?obs+'\n':'')+dData+' — '+resp+' (desc): '+descAtual;
+        obs=(obs?obs+'\n':'')+dData+' — '+resp+' atualizou: '+descAtual;
         DATA.descSaved[nome] = descAtual;
         changed=true;
       }
