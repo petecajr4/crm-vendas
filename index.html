@@ -2779,12 +2779,11 @@ if (!DATA.obsIds) DATA.obsIds = {};
 (function() {
   try {
     const saved = localStorage.getItem('crm_obs');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      // Merge: localStorage overrides embedded (localStorage is more recent)
-      Object.assign(DATA.obs, parsed);
-    }
-  } catch(e) {}
+    if (saved) Object.assign(DATA.obs, JSON.parse(saved));
+    const savedDesc = localStorage.getItem('crm_desc');
+    if (savedDesc) DATA.descSaved = JSON.parse(savedDesc);
+    else DATA.descSaved = {};
+  } catch(e) { DATA.descSaved = {}; }
 })();
 
 // ==================== STATE DECLARATIONS ====================
@@ -4978,169 +4977,103 @@ async function enviarTicket(nome) {
 
 
 // ==================== SYNC TICKETS ====================
-async function sincronizarTickets() {
-  const btn = document.getElementById('btnSyncTickets');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Buscando...'; }
-
+async function _syncCore() {
   try {
-    const urlAll = TICKET_API + '?action=getAll&t=' + Date.now();
-    const resAll = await fetch(urlAll, {method:'GET', redirect:'follow'});
-    const textAll = await resAll.text();
-    let allData;
-    try { allData = JSON.parse(textAll); } catch(_) {
-      const s = textAll.indexOf('{') >= 0 ? textAll.indexOf('{') : textAll.indexOf('[');
-      if (s !== -1) allData = JSON.parse(textAll.slice(s));
-    }
-    const allTickets = allData?.tickets || allData || [];
-    if (!Array.isArray(allTickets)) throw new Error('Formato inválido');
+    try { const s = localStorage.getItem('crm_obs'); if(s) Object.assign(DATA.obs, JSON.parse(s)); } catch(e){}
+    const r = await fetch(TICKET_API + '?action=getAll&t=' + Date.now(), {method:'GET',redirect:'follow'});
+    const txt = await r.text();
+    let d; try{d=JSON.parse(txt);}catch(_){const s=txt.indexOf('{')>=0?txt.indexOf('{'):txt.indexOf('[');if(s!==-1)d=JSON.parse(txt.slice(s));}
+    const tickets = (d?.tickets||d||[]).filter(t=>!t.deleted&&t.assunto&&t.assunto.startsWith('Recontato:'));
+    if(!tickets.length) return 0;
+    if(!DATA.obs) DATA.obs={};
+    if(!DATA.descSaved) DATA.descSaved={};
+    let n=0;
+    for(const t of tickets){
+      const nome=(t.assunto||'').slice(10).trim();
+      if(!nome) continue;
+      try{ const s=localStorage.getItem('crm_obs'); if(s){const p=JSON.parse(s);if(p[nome])DATA.obs[nome]=p[nome];} }catch(e){}
+      let obs=DATA.obs[nome]||'';
+      let changed=false;
 
-    const crmTickets = allTickets.filter(t =>
-      t.deleted !== 'sim' && t.assunto && t.assunto.startsWith('Recontato:')
-    );
+      // 1. Sync ticket DESC field — registers when vendor saves/edits ticket
+      const descAtual = (t.desc||'').trim();
+      const descSalvo = DATA.descSaved[nome] || '';
+      if(descAtual && descAtual !== descSalvo && !obs.includes(descAtual)) {
+        const dData = new Date().toLocaleDateString('pt-BR');
+        const resp = t.resp || '?';
+        obs=(obs?obs+'\n':'')+dData+' — '+resp+' (desc): '+descAtual;
+        DATA.descSaved[nome] = descAtual;
+        changed=true;
+      }
 
-    if (!crmTickets.length) {
-      if (btn) { btn.disabled = false; btn.textContent = '🔄 Sync Tickets'; }
-      showToast('Nenhum ticket do CRM encontrado', 'warn');
-      return;
-    }
-
-    if (!DATA.obs) DATA.obs = {};
-    let atualizados = 0;
-
-    for (const t of crmTickets) {
-      const nome = (t.assunto||'').slice(10).trim();
-      if (!nome) continue;
-      try {
-        const urlC = TICKET_API + '?action=getComments&ticketId=' + encodeURIComponent(t.id) + '&t=' + Date.now();
-        const resC = await fetch(urlC, {method:'GET', redirect:'follow'});
-        const textC = await resC.text();
-        let comments;
-        try { comments = JSON.parse(textC); } catch(_) {
-          const s = textC.indexOf('{') >= 0 ? textC.indexOf('{') : textC.indexOf('[');
-          if (s !== -1) comments = JSON.parse(textC.slice(s));
+      // 2. Sync comments (chat messages)
+      try{
+        const rc=await fetch(TICKET_API+'?action=getComments&ticketId='+encodeURIComponent(t.id)+'&t='+Date.now(),{method:'GET',redirect:'follow'});
+        const tc=await rc.text();
+        let cm; try{cm=JSON.parse(tc);}catch(_){const s=tc.indexOf('{')>=0?tc.indexOf('{'):tc.indexOf('[');if(s!==-1)cm=JSON.parse(tc.slice(s));}
+        const list=Array.isArray(cm)?cm:Array.isArray(cm?.comments)?cm.comments:[];
+        for(const c of list){
+          const txt=(c.text||'').trim();
+          if(!txt||obs.includes(txt)) continue;
+          const dData=c.createdAt?new Date(c.createdAt).toLocaleDateString('pt-BR'):new Date().toLocaleDateString('pt-BR');
+          obs=(obs?obs+'\n':'')+dData+' — '+(c.author||'?')+': '+txt;
+          changed=true;
         }
-        const list = Array.isArray(comments) ? comments :
-                     Array.isArray(comments?.comments) ? comments.comments : [];
+      }catch(e){}
 
-        // Read current obs — this is the source of truth across reloads
-        const obsAtual = DATA.obs[nome] || '';
-        const linhasNovas = [];
+      // 3. Mark finalizado once
+      if((t.status==='finalizado'||t.archived==='sim')&&!obs.includes('✅ Ticket finalizado')){
+        obs=(obs?obs+'\n':'')+new Date().toLocaleDateString('pt-BR')+' — ✅ Ticket finalizado';
+        changed=true;
+      }
 
-        for (const c of list) {
-          const txt = (c.text||'').trim();
-          if (!txt) continue;
-          // Dedup: check if this comment text already appears anywhere in obs
-          if (obsAtual.includes(txt)) continue;
-          // Also check against lines we're about to add (within this sync)
-          const linha = (c.author||'?') + ': ' + txt;
-          if (linhasNovas.some(l => l.includes(txt))) continue;
-          const d = c.createdAt ? new Date(c.createdAt).toLocaleDateString('pt-BR') : new Date().toLocaleDateString('pt-BR');
-          linhasNovas.push(d + ' — ' + linha);
-        }
-
-        if (linhasNovas.length > 0) {
-          DATA.obs[nome] = (obsAtual ? obsAtual + '\n' : '') + linhasNovas.join('\n');
-          atualizados++;
-        }
-
-        if ((t.status === 'finalizado' || t.archived === 'sim') && !(DATA.obs[nome]||obsAtual).includes('✅ Finalizado')) {
-          DATA.obs[nome] = ((DATA.obs[nome]||obsAtual) ? (DATA.obs[nome]||obsAtual) + '\n' : '') + new Date().toLocaleDateString('pt-BR') + ' — ✅ Ticket finalizado';
-          atualizados++;
-        }
-      } catch(e) {}
+      if(changed){DATA.obs[nome]=obs;n++;}
     }
+    if(n>0) persistObs();
+    return n;
+  }catch(e){return 0;}
+}
 
-    if (btn) { btn.disabled = false; btn.textContent = '🔄 Sync Tickets'; }
-    if (atualizados > 0) {
-      persistObs();
-      showToast('✅ ' + atualizados + ' novidade(s) salva(s)!', 'ok');
-      try { if(cidadeAtual && cidadeAtual !== 'Geral') buildCidadeOutra(cidadeAtual); } catch(e){}
-    } else {
-      showToast('Nenhuma resposta nova (' + crmTickets.length + ' tickets encontrados)', 'warn');
-    }
-  } catch(err) {
-    if (btn) { btn.disabled = false; btn.textContent = '🔄 Sync Tickets'; }
-    showToast('❌ Erro: ' + err.message, 'warn');
+
+async function sincronizarTickets() {
+  const btn=document.getElementById('btnSyncTickets');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Buscando...';}
+  const n=await _syncCore();
+  if(btn){btn.disabled=false;btn.textContent='🔄 Sync Tickets';}
+  if(n>0){
+    showToast('✅ '+n+' novidade(s) salva(s)!','ok');
+    try{if(cidadeAtual&&cidadeAtual!=='Geral')buildCidadeOutra(cidadeAtual);}catch(e){}
+  }else{
+    showToast('Nenhuma resposta nova','warn');
+  }
+}
+
+async function sincronizarTicketsSilencioso() {
+  const n=await _syncCore();
+  const el=document.getElementById('syncStatus');
+  const h=new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  if(n>0){
+    if(el)el.textContent='✅ '+h;
+    try{if(cidadeAtual&&cidadeAtual!=='Geral')buildCidadeOutra(cidadeAtual);}catch(e){}
+  }else{
+    if(el)el.textContent='⏱ '+h;
   }
 }
 
 
-// Silent auto-sync — runs every 20s on cidades page, no UI feedback
-async function sincronizarTicketsSilencioso() {
-  try {
-    const urlAll = TICKET_API + '?action=getAll&t=' + Date.now();
-    const resAll = await fetch(urlAll, {method:'GET', redirect:'follow'});
-    const textAll = await resAll.text();
-    let allData;
-    try { allData = JSON.parse(textAll); } catch(_) {
-      const s = textAll.indexOf('{') >= 0 ? textAll.indexOf('{') : textAll.indexOf('[');
-      if (s !== -1) allData = JSON.parse(textAll.slice(s));
-    }
-    const allTickets = allData?.tickets || allData || [];
-    if (!Array.isArray(allTickets)) return;
-
-    const crmTickets = allTickets.filter(t =>
-      t.deleted !== 'sim' && t.assunto && t.assunto.startsWith('Recontato:')
-    );
-    if (!crmTickets.length) return;
-
-    if (!DATA.obs) DATA.obs = {};
-    let atualizados = 0;
-
-    for (const t of crmTickets) {
-      const nome = (t.assunto||'').slice(10).trim();
-      if (!nome) continue;
-      try {
-        const urlC = TICKET_API + '?action=getComments&ticketId=' + encodeURIComponent(t.id) + '&t=' + Date.now();
-        const resC = await fetch(urlC, {method:'GET', redirect:'follow'});
-        const textC = await resC.text();
-        let comments;
-        try { comments = JSON.parse(textC); } catch(_) {
-          const s = textC.indexOf('{') >= 0 ? textC.indexOf('{') : textC.indexOf('[');
-          if (s !== -1) comments = JSON.parse(textC.slice(s));
-        }
-        const list = Array.isArray(comments) ? comments :
-                     Array.isArray(comments?.comments) ? comments.comments : [];
-
-        const obsAtual = DATA.obs[nome] || '';
-        const linhasNovas = [];
-        for (const c of list) {
-          const txt = (c.text||'').trim();
-          if (!txt || obsAtual.includes(txt)) continue;
-          if (linhasNovas.some(l => l.includes(txt))) continue;
-          const d = c.createdAt ? new Date(c.createdAt).toLocaleDateString('pt-BR') : new Date().toLocaleDateString('pt-BR');
-          linhasNovas.push(d + ' — ' + (c.author||'?') + ': ' + txt);
-        }
-        if (linhasNovas.length > 0) {
-          DATA.obs[nome] = (obsAtual ? obsAtual + '\n' : '') + linhasNovas.join('\n');
-          atualizados++;
-        }
-        if ((t.status === 'finalizado' || t.archived === 'sim') && !(DATA.obs[nome]||obsAtual).includes('✅ Finalizado')) {
-          DATA.obs[nome] = ((DATA.obs[nome]||obsAtual) ? (DATA.obs[nome]||obsAtual)+'\n' : '') + new Date().toLocaleDateString('pt-BR') + ' — ✅ Ticket finalizado';
-          atualizados++;
-        }
-      } catch(e) {}
-    }
-
-    const el = document.getElementById('syncStatus');
-    if (atualizados > 0) {
-      persistObs();
-      if (el) el.textContent = '✅ ' + new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-      try { if(cidadeAtual && cidadeAtual !== 'Geral') buildCidadeOutra(cidadeAtual); } catch(e){}
-    } else {
-      if (el) el.textContent = '⏱ ' + new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-    }
-  } catch(e) {}
-}
-
 // Save obs to localStorage — called after every change
 function persistObs() {
   try { localStorage.setItem('crm_obs', JSON.stringify(DATA.obs)); } catch(e) {}
+  try { localStorage.setItem('crm_desc', JSON.stringify(DATA.descSaved||{})); } catch(e) {}
 }
 // ==================== INIT ====================
 
 // Cleanup duplicate obs lines on load
 (function cleanupObs() {
+  try {
+    const saved = localStorage.getItem('crm_obs');
+    if (saved) Object.assign(DATA.obs, JSON.parse(saved));
+  } catch(e) {}
   if (!DATA.obs) return;
   Object.keys(DATA.obs).forEach(nome => {
     const lines = (DATA.obs[nome]||'').split('\n');
@@ -5152,6 +5085,8 @@ function persistObs() {
     }).join('\n');
   });
   if (!DATA.obsIds) DATA.obsIds = {};
+  // Save cleaned version back
+  try { localStorage.setItem('crm_obs', JSON.stringify(DATA.obs)); } catch(e) {}
 })();
 
   showPage('dashboard');
@@ -5413,6 +5348,1142 @@ function showToast(msg, type) {
   setTimeout(() => t.remove(), 3500);
 }
 </script>
+
+<!-- MODAL INATIVAÇÃO -->
+<div class="modal-overlay" id="inativModal">
+  <div class="modal" style="max-width:520px">
+    <div id="inativModalContent"></div>
+  </div>
+</div>
+
+
+<!-- MODAL ANOTAÇÃO -->
+<div class="modal-overlay" id="obsModal" onclick="if(event.target===this)fecharObs()" style="display:none">
+  <div class="modal" style="max-width:480px">
+    <div id="obsContent"></div>
+  </div>
+</div>
+
+<!-- MODAL TICKET -->
+<div class="modal-overlay" id="ticketModal" onclick="if(event.target===this)fecharTicketModal()" style="display:none">
+  <div class="modal" style="max-width:480px">
+    <div id="ticketContent"></div>
+  </div>
+</div>
+</body>
+</html>
+async function _syncCore(silent) {
+  try {
+    // Always merge localStorage first
+    try {
+      const saved = localStorage.getItem('crm_obs');
+      if (saved) Object.assign(DATA.obs, JSON.parse(saved));
+    } catch(e) {}
+
+    const urlAll = TICKET_API + '?action=getAll&t=' + Date.now();
+    const resAll = await fetch(urlAll, {method:'GET', redirect:'follow'});
+    const textAll = await resAll.text();
+    let allData;
+    try { allData = JSON.parse(textAll); } catch(_) {
+      const s = textAll.indexOf('{') >= 0 ? textAll.indexOf('{') : textAll.indexOf('[');
+      if (s !== -1) allData = JSON.parse(textAll.slice(s));
+    }
+    const allTickets = allData?.tickets || allData || [];
+    if (!Array.isArray(allTickets)) return 0;
+
+    const crmTickets = allTickets.filter(t =>
+      t.deleted !== 'sim' && t.assunto && t.assunto.startsWith('Recontato:')
+    );
+    if (!crmTickets.length) return 0;
+
+    if (!DATA.obs) DATA.obs = {};
+    let atualizados = 0;
+
+    for (const t of crmTickets) {
+      const nome = (t.assunto||'').slice(10).trim();
+      if (!nome) continue;
+
+      // Always read fresh from localStorage for this client
+      try {
+        const saved = localStorage.getItem('crm_obs');
+        if (saved) { const p = JSON.parse(saved); if (p[nome]) DATA.obs[nome] = p[nome]; }
+      } catch(e) {}
+
+      const obsAtual = DATA.obs[nome] || '';
+      let obsNova = obsAtual;
+      let changed = false;
+
+      // 1. Sync comments (chat messages from vendor)
+      try {
+        const urlC = TICKET_API + '?action=getComments&ticketId=' + encodeURIComponent(t.id) + '&t=' + Date.now();
+        const resC = await fetch(urlC, {method:'GET', redirect:'follow'});
+        const textC = await resC.text();
+        let comments;
+        try { comments = JSON.parse(textC); } catch(_) {
+          const s = textC.indexOf('{') >= 0 ? textC.indexOf('{') : textC.indexOf('[');
+          if (s !== -1) comments = JSON.parse(textC.slice(s));
+        }
+        const list = Array.isArray(comments) ? comments :
+                     Array.isArray(comments?.comments) ? comments.comments : [];
+
+        for (const c of list) {
+          const txt = (c.text||'').trim();
+          if (!txt) continue;
+          // Skip if text already in obs (anywhere)
+          if (obsNova.includes(txt)) continue;
+          const d = c.createdAt ? new Date(c.createdAt).toLocaleDateString('pt-BR') : new Date().toLocaleDateString('pt-BR');
+          const linha = d + ' — ' + (c.author||'?') + ': ' + txt;
+          if (obsNova.includes(linha)) continue;
+          obsNova = (obsNova ? obsNova + '\n' : '') + linha;
+          changed = true;
+        }
+      } catch(e) {}
+
+      // 2. Mark finalizado ONCE only
+      if (t.status === 'finalizado' || t.archived === 'sim') {
+        if (!obsNova.includes('✅ Ticket finalizado')) {
+          const d = new Date().toLocaleDateString('pt-BR');
+          obsNova = (obsNova ? obsNova + '\n' : '') + d + ' — ✅ Ticket finalizado';
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        DATA.obs[nome] = obsNova;
+        atualizados++;
+      }
+    }
+
+    if (atualizados > 0) persistObs();
+    return atualizados;
+  } catch(e) { return 0; }
+}
+
+async function sincronizarTickets() {
+  const btn = document.getElementById('btnSyncTickets');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Buscando...'; }
+  const n = await _syncCore(false);
+  if (btn) { btn.disabled = false; btn.textContent = '🔄 Sync Tickets'; }
+  if (n > 0) {
+    showToast('✅ ' + n + ' novidade(s) salva(s)!', 'ok');
+    try { if(cidadeAtual && cidadeAtual !== 'Geral') buildCidadeOutra(cidadeAtual); } catch(e){}
+  } else {
+    showToast('Nenhuma resposta nova', 'warn');
+  }
+}
+
+async function sincronizarTicketsSilencioso() {
+  const n = await _syncCore(true);
+  const el = document.getElementById('syncStatus');
+  const hora = new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  if (n > 0) {
+    if (el) el.textContent = '✅ ' + hora;
+    try { if(cidadeAtual && cidadeAtual !== 'Geral') buildCidadeOutra(cidadeAtual); } catch(e){}
+  } else {
+    if (el) el.textContent = '⏱ ' + hora;
+  }
+}lumns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .kpi-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    position: relative; overflow: hidden;
+  }
+  .kpi-card::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  }
+  .kpi-card.blue::before { background: var(--accent); }
+  .kpi-card.green::before { background: var(--accent3); }
+  .kpi-card.yellow::before { background: var(--accent2); }
+  .kpi-card.red::before { background: var(--danger); }
+  .kpi-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .kpi-value { font-size: 28px; font-weight: 800; letter-spacing: -1px; }
+  .kpi-sub { font-size: 12px; color: var(--muted); margin-top: 4px; font-family: 'DM Mono', monospace; }
+
+  /* GRID LAYOUTS */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+
+  /* CHART CARD */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .card-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  .card-title { font-size: 14px; font-weight: 700; color: var(--text); }
+  .card-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  /* YEAR TABS */
+  .year-tabs { display: flex; gap: 6px; }
+  .year-tab {
+    padding: 4px 12px; border-radius: 6px;
+    font-size: 12px; font-weight: 600; cursor: pointer;
+    background: var(--surface2); color: var(--muted);
+    border: 1px solid var(--border); transition: all .15s;
+  }
+  .year-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  /* TABLE */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead tr { border-bottom: 1px solid var(--border); }
+  th {
+    text-align: left; padding: 10px 12px;
+    font-size: 11px; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .8px;
+  }
+  td { padding: 10px 12px; border-bottom: 1px solid rgba(37,42,58,.6); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(79,142,247,.04); }
+
+  /* STATUS PILLS */
+  .status {
+    display: inline-block; padding: 3px 10px;
+    border-radius: 20px; font-size: 11px; font-weight: 700;
+    font-family: 'DM Mono', monospace; white-space: nowrap;
+  }
+  .s-active { background: rgba(79,222,142,.15); color: var(--accent3); }
+  .s-warn { background: rgba(247,156,79,.15); color: var(--warn); }
+  .s-danger { background: rgba(247,92,92,.15); color: var(--danger); }
+  .s-blue { background: rgba(79,142,247,.15); color: var(--accent); }
+
+  /* RANK BAR */
+  .rank-bar-wrap { display: flex; align-items: center; gap: 8px; }
+  .rank-bar { flex: 1; height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+  .rank-bar-fill { height: 100%; border-radius: 3px; transition: width .6s ease; }
+
+  /* SEARCH */
+  .search-input {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text);
+    padding: 8px 14px; font-size: 13px;
+    font-family: 'Syne', sans-serif;
+    outline: none; width: 220px;
+    transition: border-color .15s;
+  }
+  .search-input:focus { border-color: var(--accent); }
+  .search-input::placeholder { color: var(--muted); }
+
+  /* FILTER PILLS */
+  .filter-group { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+  .filter-pill {
+    padding: 5px 14px; border-radius: 20px;
+    font-size: 12px; font-weight: 600; cursor: pointer;
+    background: var(--surface2); color: var(--muted);
+    border: 1px solid var(--border); transition: all .15s;
+  }
+  .filter-pill.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  /* SPARKLINE */
+  .spark { height: 40px; width: 100px; }
+
+  /* MINI HEATMAP */
+  .heatmap { display: flex; flex-wrap: wrap; gap: 3px; }
+  .hm-cell {
+    width: 20px; height: 20px; border-radius: 3px;
+    font-size: 9px; cursor: pointer;
+    position: relative;
+  }
+
+  /* GROUPED TAG */
+  .group-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: rgba(247,201,79,.12); color: var(--accent2);
+    border: 1px solid rgba(247,201,79,.3);
+    border-radius: 4px; padding: 2px 7px; font-size: 10px; font-weight: 700;
+  }
+
+  /* CITY HEADER */
+  .city-header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: var(--surface2);
+    border-radius: 8px; margin-bottom: 12px;
+    cursor: pointer; border: 1px solid var(--border);
+    transition: border-color .15s;
+  }
+  .city-header:hover { border-color: var(--accent); }
+  .city-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+  /* PRODUCT BADGE */
+  .prod-tag {
+    display: inline-block; padding: 2px 8px;
+    border-radius: 4px; font-size: 10px; font-weight: 700;
+    background: var(--surface2); color: var(--muted);
+    border: 1px solid var(--border);
+  }
+
+  /* TOOLTIP */
+  .tooltip { position: relative; }
+  .tooltip:hover::after {
+    content: attr(data-tip);
+    position: absolute; bottom: 125%; left: 50%;
+    transform: translateX(-50%);
+    background: #1c2030; color: var(--text);
+    padding: 6px 10px; border-radius: 6px;
+    font-size: 11px; white-space: nowrap;
+    border: 1px solid var(--border); z-index: 99;
+  }
+
+  /* SCROLL */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ANIMATIONS */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fade-in { animation: fadeUp .35s ease both; }
+  .fade-in:nth-child(2) { animation-delay: .05s; }
+  .fade-in:nth-child(3) { animation-delay: .1s; }
+  .fade-in:nth-child(4) { animation-delay: .15s; }
+
+  /* MODAL */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.7); backdrop-filter: blur(4px);
+    z-index: 200; display: none; align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 28px; max-width: 700px; width: 92%;
+    max-height: 80vh; overflow-y: auto;
+  }
+  .modal-title { font-size: 18px; font-weight: 800; margin-bottom: 4px; }
+  .modal-close {
+    background: none; border: none; color: var(--muted);
+    font-size: 20px; cursor: pointer; float: right; margin-top: -4px;
+  }
+
+  /* RESPONSIVE */
+  @media (max-width: 900px) {
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  }
+
+  /* PRINT BUTTON */
+  .btn-print {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 16px; border-radius: 8px;
+    background: rgba(79,142,247,.12);
+    border: 1px solid rgba(79,142,247,.3);
+    color: var(--accent); font-family: 'Syne', sans-serif;
+    font-size: 13px; font-weight: 700; cursor: pointer;
+    transition: all .15s; white-space: nowrap;
+  }
+  .btn-print:hover { background: rgba(79,142,247,.22); border-color: var(--accent); }
+
+  /* PRINT STYLES */
+  @media print {
+    @page { margin: 12mm 10mm; size: A4 landscape; }
+
+    body { background: #fff !important; color: #111 !important; }
+    :root {
+      --bg: #fff; --surface: #fff; --surface2: #f5f5f5;
+      --border: #ddd; --text: #111; --muted: #666;
+      --accent: #1a5fd4; --accent2: #b07d00; --accent3: #1a8a4a;
+    }
+
+    /* Hide everything except active page */
+    .sidebar, .btn-print, .modal-overlay,
+    .year-tabs, .filter-group, .search-input,
+    #cruzSearch, #cruzDropdown, .nav-item,
+    #fluxoChartCard { display: none !important; }
+
+    .main { margin-left: 0 !important; padding: 0 !important; }
+    .page { display: none !important; }
+    .page.active { display: block !important; }
+
+    /* Force all cards to be visible and white */
+    .card { 
+      background: #fff !important; border: 1px solid #ddd !important;
+      break-inside: avoid; margin-bottom: 8px !important;
+      page-break-inside: avoid;
+    }
+    .kpi-card { background: #f8f8f8 !important; border: 1px solid #ddd !important; }
+    .kpi-card::before { display: none !important; }
+    .kpi-value { color: #1a5fd4 !important; }
+
+    /* Table colors for print */
+    table { font-size: 10px !important; }
+    th { background: #f0f0f0 !important; color: #333 !important; }
+    td { color: #111 !important; }
+
+    /* Heatmap cells - keep color but add border */
+    #cruzBody td div, #fluxoBody td div {
+      border: 1px solid #ccc;
+      color: #111 !important;
+      font-size: 8px !important;
+    }
+
+    /* Print header */
+    .print-header {
+      display: flex !important;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 8px;
+      margin-bottom: 12px;
+      border-bottom: 2px solid #1a5fd4;
+    }
+    .print-header .ph-title { font-size: 18px; font-weight: 800; color: #1a5fd4; }
+    .print-header .ph-sub { font-size: 11px; color: #666; margin-top: 2px; }
+    .print-header .ph-date { font-size: 11px; color: #666; text-align: right; }
+
+    /* Page breaks */
+    .kpi-grid { page-break-after: avoid; }
+    .grid-2, .grid-3 { grid-template-columns: 1fr 1fr !important; }
+
+    /* Chart canvases - let them render */
+    canvas { max-height: 220px !important; }
+
+    /* Status badges */
+    .status { border: 1px solid #999 !important; background: #f0f0f0 !important; color: #333 !important; }
+    .prod-tag { border: 1px solid #bbb !important; background: #f5f5f5 !important; color: #333 !important; }
+
+    /* Rank bars */
+    .rank-bar { background: #eee !important; }
+    .rank-bar-fill { opacity: 0.7; }
+
+    /* Table sticky columns - remove sticky for print */
+    td[style*="position:sticky"], th[style*="position:sticky"
+    {ide:"IDE_FERNANDÓPOLIS_05", clientes:["ERICO DA SILVA PINHO", "BETO LETRAS"], obs:"Grupo Fernandópolis 05", cidade:"FERNANDÓPOLIS"},
+  
+    {ide:"IDE_FERNANDÓPOLIS_06", clientes:["VITORIARTS", "JADEILSON DA SILVA SANTOS"], obs:"Grupo Fernandópolis 06", cidade:"FERNANDÓPOLIS"},
+  ] {
+      position: static !important;
+    }
+  }
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-logo">CRM</div>
+  <div class="nav-item active" onclick="showPage('dashboard')" data-page="dashboard">
+    <span class="icon">📊</span><span>Dashboard</span>
+  </div>
+  <div class="nav-item" onclick="showPage('cidades')" data-page="cidades">
+    <span class="icon">📍</span><span>Por Cidade</span>
+  </div>
+  <div class="nav-item" onclick="showPage('produtos')" data-page="produtos">
+    <span class="icon">📦</span><span>Produtos</span>
+  </div>
+  <div class="nav-item" onclick="showPage('clientes')" data-page="clientes">
+    <span class="icon">👥</span><span>Clientes</span>
+  </div>
+  <div class="nav-item" onclick="showPage('abandono')" data-page="abandono">
+    <span class="icon">⚠️</span><span>Abandono</span>
+  </div>
+  <div class="nav-item" onclick="showPage('fluxo')" data-page="fluxo">
+    <span class="icon">📈</span><span>Fluxo</span>
+  </div>
+  <div class="nav-item" onclick="showPage('cruzamento')" data-page="cruzamento">
+    <span class="icon">🔀</span><span>Cruzamento</span>
+  </div>
+  <div class="nav-item" onclick="showPage('catalogo')" data-page="catalogo">
+    <span class="icon">🗂️</span><span>Catálogo</span>
+  </div>
+<div style="margin-top:auto;padding:12px 8px;border-top:1px solid var(--border)">
+    <button onclick="exportarHTML()" style="width:100%;background:rgba(79,222,142,.12);border:1px solid rgba(79,222,142,.25);color:var(--accent3);border-radius:8px;padding:8px 4px;font-size:10px;font-weight:700;cursor:pointer;font-family:'Syne',sans-serif;text-align:center;line-height:1.3">
+      💾<br>Exportar<br>HTML
+    </button>
+  </div>
+  </nav>
+
+<!-- MODAL -->
+<div class="modal-overlay" id="clientModal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal()">✕</button>
+    <div id="modalContent"></div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<main class="main">
+
+<!-- ==================== DASHBOARD ==================== -->
+<div id="page-dashboard" class="page active">
+  <div class="page-header fade-in">
+    <div>
+      <div class="page-title">Dashboard <span>Geral</span></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:4px">
+        <div style="font-size:13px;color:var(--muted)">2024–2026</div>
+        <button id="btnSyncTickets" onclick="sincronizarTickets()" style="background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.25);color:var(--accent);border-radius:6px;padding:4px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Syne',sans-serif">🔄 Sync Tickets</button>
+        <span id="syncStatus" style="font-size:10px;color:var(--muted)"></span>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="badge badge-blue" id="dashBadgeClientes">258 Clientes</span>
+      <span class="badge badge-green" id="dashBadgeVendas">1.190 Vendas</span>
+      <span class="badge badge-yellow" id="dashBadgeCidades">2 Cidades</span>
+      <button class="btn-print" onclick="printPage()">🖨️ Imprimir</button>
+    </div>
+  </div>
+  <div class="print-header" style="display:none">
+    <div><div class="ph-title">CRM Vendas — Dashboard Geral</div><div class="ph-sub">2024–2026 · 258 Clientes · 1.190 Vendas</div></div>
+    <div class="ph-date" id="phDateDash"></div>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi-card blue fade-in">
+      <div class="kpi-label">Faturamento Total</div>
+      <div class="kpi-value" id="dashKpiFat">R$ 0</div>
+      <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
+        <span style="font-size:10px;font-family:'DM Mono',monospace;color:var(--accent)" id="dashKpiFatJales">Jales R$388,6k</span>
+        <span style="font-size:10px;color:var(--muted)">·</span>
+        <span style="font-size:10px;font-family:'DM Mono',monospace;color:var(--accent3)" id="dashKpiFatAnd">Andradina R$22,0k</span>
+      </div>
+    </div>
+    <div class="kpi-card green fade-in">
+      <div class="kpi-label">Ticket Médio</div>
+      <div class="kpi-value" id="dashKpiTicket">R$ 0</div>
+      <div class="kpi-sub" id="dashKpiTicketSub">0 pedidos</div>
+    </div>
+    <div class="kpi-card yellow fade-in">
+      <div class="kpi-label">Top Cliente</div>
+      <div class="kpi-value" id="dashKpiTop" style="font-size:16px;padding-top:4px">—</div>
+      <div class="kpi-sub" id="dashKpiTopSub">—</div>
+    </div>
+    <div class="kpi-card red fade-in">
+      <div class="kpi-label">Clientes Abandonados</div>
+      <div class="kpi-value" id="dashKpiAbandono">13</div>
+      <div class="kpi-sub" id="dashKpiAbandonoSub">0 abandonados</div>
+    </div>
+  </div>
+
+  <div class="grid-3">
+    <div class="card fade-in">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Faturamento Mensal</div>
+          <div class="card-sub">Evolução 2024–2026</div>
+        </div>
+        <div class="year-tabs">
+          <div class="year-tab active" onclick="filterYear('all', this)">Todos</div>
+          <div class="year-tab" onclick="filterYear('2024', this)">2024</div>
+          <div class="year-tab" onclick="filterYear('2025', this)">2025</div>
+          <div class="year-tab" onclick="filterYear('2026', this)">2026</div>
+        </div>
+      </div>
+      <canvas id="chartMonthly" height="200"></canvas>
+    </div>
+    <div class="card fade-in">
+      <div class="card-header">
+        <div class="card-title">Ano × Ano</div>
+        <div class="card-sub">Comparativo</div>
+      </div>
+      <canvas id="chartYearly" height="200"></canvas>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card fade-in">
+      <div class="card-header">
+        <div class="card-title">Top 10 Clientes</div>
+        <div class="card-sub">por faturamento total</div>
+      </div>
+      <div id="topClientsList"></div>
+    </div>
+    <div class="card fade-in">
+      <div class="card-header">
+        <div class="card-title">Produtos Mais Vendidos</div>
+        <div class="card-sub">por frequência de pedidos</div>
+      </div>
+      <canvas id="chartProducts" height="280"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== CIDADES ==================== -->
+<div id="page-cidades" class="page">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Vendas por <span>Cidade</span></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:4px">
+        <div style="font-size:13px;color:var(--muted)">2024–2026</div>
+        <button id="btnSyncTickets" onclick="sincronizarTickets()" style="background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.25);color:var(--accent);border-radius:6px;padding:4px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Syne',sans-serif">🔄 Sync Tickets</button>
+        <span id="syncStatus" style="font-size:10px;color:var(--muted)"></span>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;max-width:calc(100vw - 200px);overflow-x:auto;padding-bottom:4px" id="cidTabsContainer">
+        <div class="year-tab active cid-tab-btn" onclick="selectCidade('Geral',this)">📊 Geral</div>
+        <div class="year-tab cid-tab-btn" onclick="selectCidade('Jales',this)">🏙️ Jales</div>
+        <div class="year-tab cid-tab-btn" onclick="selectCidade('Andradina',this)">🏙️ Andradina</div>
+      </div>
+      <button class="btn-print" onclick="printPage()">🖨️ Imprimir</button>
+    </div>
+  </div>
+  <div class="print-header" style="display:none">
+    <div><div class="ph-title" id="phTitleCidades">CRM Vendas — Vendas por Cidade</div><div class="ph-sub">2024–2026</div></div>
+    <div class="ph-date" id="phDateCidades"></div>
+  </div>
+
+  <!-- GERAL -->
+  <div id="cid-geral" style="display:none">
+    <div class="kpi-grid">
+      <div class="kpi-card blue"><div class="kpi-label">Total Geral</div><div class="kpi-value">R$ 409,5k</div><div class="kpi-sub">Jales + Andradina</div></div>
+      <div class="kpi-card green"><div class="kpi-label">Jales</div><div class="kpi-value">R$ 388,6k</div><div class="kpi-sub">94,9% do total</div></div>
+      <div class="kpi-card yellow"><div class="kpi-label">Andradina</div><div class="kpi-value">R$ 21,0k</div><div class="kpi-sub">5,1% do total</div></div>
+      <div class="kpi-card red"><div class="kpi-label">Total Clientes</div><div class="kpi-value">42</div><div class="kpi-sub">258 clientes</div></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><div class="card-title">📊 Comparativo Mensal — Jales vs Andradina</div></div>
+      <canvas id="chartGeralComparativo" height="200"></canvas>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header"><div class="card-title">Participação por Cidade</div></div>
+        <canvas id="chartGeralPizza" height="260"></canvas>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">Faturamento Anual por Cidade</div></div>
+        <canvas id="chartGeralAnual" height="260"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- JALES -->
+  <div id="cid-jales" style="display:none">
+    <div class="kpi-grid">
+      <div class="kpi-card blue"><div class="kpi-label">Faturamento Jales</div><div class="kpi-value">R$ 388,6k</div><div class="kpi-sub">Jan/2024 → Fev/2026</div></div>
+      <div class="kpi-card green"><div class="kpi-label">Clientes Jales</div><div class="kpi-value">37</div><div class="kpi-sub">ativos no período</div></div>
+      <div class="kpi-card yellow"><div class="kpi-label">Pedidos Jales</div><div class="kpi-value">1.137</div><div class="kpi-sub">total de transações</div></div>
+      <div class="kpi-card red"><div class="kpi-label">Abandonados</div><div class="kpi-value">10</div><div class="kpi-sub">+90 dias sem compra</div></div>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><div><div class="card-title">🏙️ Jales — Faturamento Mensal</div></div></div>
+      <canvas id="chartCidadeJales" height="180"></canvas>
+    </div>
+    <div class="grid-2">
+      <div class="card"><div class="card-header"><div class="card-title">Ranking de Clientes — Jales</div></div><div id="cidadeClientesJales"></div></div>
+      <div class="card"><div class="card-header"><div class="card-title">Status de Abandono — Jales</div></div><canvas id="chartAbandonoJales" height="260"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ANDRADINA -->
+  <div id="cid-andradina" style="display:none">
+    <div class="kpi-grid">
+      <div class="kpi-card blue"><div class="kpi-label">Faturamento Andradina</div><div class="kpi-value">R$ 21,0k</div><div class="kpi-sub">Jan/2024 → Fev/2026</div></div>
+      <div class="kpi-card green"><div class="kpi-label">Clientes Ativos</div><div class="kpi-value">5</div><div class="kpi-sub">compraram no período</div></div>
+      <div class="kpi-card yellow"><div class="kpi-label">Pedidos</div><div class="kpi-value">53</div><div class="kpi-sub">total de transações</div></div>
+      <div class="kpi-card red"><div class="kpi-label">Principal Cliente</div><div class="kpi-value" style="font-size:14px;padding-top:4px">CIA LOVATO</div><div class="kpi-sub">R$ 21.006 · 48 pedidos</div></div>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><div><div class="card-title">🏙️ Andradina — Faturamento Mensal</div></div></div>
+      <canvas id="chartCidadeAndradina" height="180"></canvas>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header"><div class="card-title">Ranking de Clientes — Andradina</div></div>
+        <div id="cidadeClientesAndradina"></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">🔗 Grupos — Andradina</div><div class="card-sub">Mesmos donos consolidados</div></div>
+        <div id="gruposAndradina"></div>
+      </div>
+    </div>
+  </div>
+
+<div id="cid-outra" style="display:none"></div>
+</div>
+
+<!-- ==================== PRODUTOS ==================== -->
+<div id="page-produtos" class="page">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Análise de <span>Produtos</span></div>
+      <div style="font-size:13px;color:var(--muted);margin-top:4px">Quem compra o quê · 26 produtos · 258 clientes</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <div class="year-tabs">
+        <div class="year-tab active" id="ptab-produto" onclick="switchProdView('produto',this)">Por Produto</div>
+        <div class="year-tab" id="ptab-cliente" onclick="switchProdView('cliente',this)">Por Cliente</div>
+      </div>
+      <button class="btn-print" onclick="printPage()">🖨️ Imprimir</button>
+    </div>
+  </div>
+  <div class="print-header" style="display:none">
+    <div><div class="ph-title">CRM Vendas — Análise de Produtos</div><div class="ph-sub">26 produtos · 258 clientes · 2024–2026</div></div>
+    <div class="ph-date" id="phDateProdutos"></div>
+  </div>
+
+  <!-- KPIs -->
+  <div class="kpi-grid" style="margin-bottom:16px">
+    <div class="kpi-card blue">
+      <div class="kpi-label">#1 em Pedidos</div>
+      <div class="kpi-value" style="font-size:16px;padding-top:4px">ADESIVO PROMO</div>
+      <div class="kpi-sub">508 pedidos · 34 clientes</div>
+    </div>
+    <div class="kpi-card green">
+      <div class="kpi-label">#1 em Faturamento</div>
+      <div class="kpi-value" style="font-size:16px;padding-top:4px">LONA FLEX</div>
+      <div class="kpi-sub">R$ 154.509 · 336 pedidos</div>
+    </div>
+    <div class="kpi-card yellow">
+      <div class="kpi-label">Maior Ticket Médio</div>
+      <div class="kpi-value" style="font-size:16px;padding-top:4px">ENVELOPAMENTO</div>
+      <div class="kpi-sub">R$ 2.759 por pedido</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">Total de Categorias</div>
+      <div class="kpi-value">26</div>
+      <div class="kpi-sub">produtos distintos</div>
+    </div>
+  </div>
+
+  <!-- VISÃO POR PRODUTO -->
+  <div id="view-produto">
+    <!-- Seletor de produto -->
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+        <div style="font-size:13px;font-weight:700;color:var(--muted);white-space:nowrap">Selecionar produto:</div>
+        <div id="prodPills" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+      </div>
+      <!-- Info do produto selecionado -->
+      <div id="prodInfo" style="display:flex;gap:16px;flex-wrap:wrap">
+        <div style="background:var(--surface2);border-radius:8px;padding:12px 18px;min-width:120px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Pedidos</div>
+          <div id="pi-qtd" style="font-size:22px;font-weight:800;color:var(--accent)">—</div>
+        </div>
+        <div style="background:var(--surface2);border-radius:8px;padding:12px 18px;min-width:140px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Faturamento</div>
+          <div id="pi-total" style="font-size:22px;font-weight:800;color:var(--accent3)">—</div>
+        </div>
+        <div style="background:var(--surface2);border-radius:8px;padding:12px 18px;min-width:120px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Clientes</div>
+          <div id="pi-clientes" style="font-size:22px;font-weight:800;color:var(--accent2)">—</div>
+        </div>
+        <div style="background:var(--surface2);border-radius:8px;padding:12px 18px;min-width:120px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Ticket Médio</div>
+          <div id="pi-ticket" style="font-size:22px;font-weight:800">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <!-- Quem compra este produto -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title" id="prodCliTitle">Clientes que compram este produto</div>
+          <div class="card-sub">ordenado por nº de pedidos</div>
+        </div>
+        <div id="prodCliList" style="max-height:420px;overflow-y:auto"></div>
+      </div>
+      <!-- Gráfico de barras dos top clientes por produto -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Top 10 compradores</div>
+          <div class="card-sub">por volume de pedidos</div>
+        </div>
+        <canvas id="chartProdClientes" height="340"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- VISÃO POR CLIENTE -->
+  <div id="view-cliente-prod" style="display:none">
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+        <div style="font-size:13px;font-weight:700;color:var(--muted);white-space:nowrap">Selecionar cliente:</div>
+        <input class="search-input" id="prodCliSearch" placeholder="🔍 Buscar cliente..." oninput="renderClienteProdView()" style="width:220px">
+      </div>
+      <div id="clienteProdPills" style="display:flex;flex-wrap:wrap;gap:6px;max-height:100px;overflow-y:auto"></div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title" id="cliProdTitle">Produtos comprados por este cliente</div>
+          <div class="card-sub">quantidade de pedidos e valor</div>
+        </div>
+        <div id="cliProdList" style="max-height:420px;overflow-y:auto"></div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Distribuição de compras</div>
+          <div class="card-sub">por produto</div>
+        </div>
+        <canvas id="chartCliProd" height="340"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tabela geral produto × cliente -->
+  <div class="card" style="margin-top:16px">
+    <div class="card-header">
+      <div class="card-title">Visão Geral — Todos os Produtos</div>
+      <div class="card-sub">ranking por pedidos e faturamento</div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Produto</th><th>Pedidos</th><th>Faturamento</th><th>Clientes</th><th>Ticket Médio</th><th>Participação</th>
+          </tr>
+        </thead>
+        <tbody id="prodSummaryTable"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== CLIENTES ==================== -->
+<div id="page-clientes" class="page">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Base de <span>Clientes</span></div>
+      <div style="font-size:13px;color:var(--muted);margin-top:4px">Cadastro · Agrupamentos · Histórico</div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <input class="search-input" id="clientSearch" placeholder="🔍 Buscar cliente..." oninput="filterClients()">
+      <button class="btn-print" onclick="printPage()">🖨️ Imprimir</button>
+    </div>
+  </div>
+  <div class="print-header" style="display:none">
+    <div><div class="ph-title">CRM Vendas — Base de Clientes</div><div class="ph-sub">221 clientes · 2024–2026</div></div>
+    <div class="ph-date" id="phDateClientes"></div>
+  </div>
+
+  <!-- Grupos -->
+  <div class="card" style="margin-bottom:16px;border-color:rgba(247,201,79,.3);background:rgba(247,201,79,.03)">
+    <div class="card-header">
+      <div>
+        <div class="card-title">🔗 Clientes Agrupados</div>
+        <div class="card-sub">Mesmos donos / empresas do mesmo grupo — faturamento consolidado</div>
+      </div>
+    </div>
+    <div id="gruposContainer"></div>
+  </div>
+
+  <div class="filter-group" id="statusFilter">
+    <div class="filter-pill active" onclick="filterStatus('all', this)">Todos</div>
+    <div class="filter-pill" onclick="filterStatus('0-15 dias', this)">✅ Ativos</div>
+    <div class="filter-pill" onclick="filterStatus('16-30 dias', this)">🟡 16–30d</div>
+    <div class="filter-pill" onclick="filterStatus('31-60 dias', this)">🟠 31–60d</div>
+    <div class="filter-pill" onclick="filterStatus('61-90 dias', this)">🔴 61–90d</div>
+    <div class="filter-pill" onclick="filterStatus('Abandonado', this)">💀 Abandonado</div>
+    <div class="filter-pill" onclick="filterStatus('Sem vendas', this)">📋 Sem vendas</div>
+    <div class="filter-pill" onclick="filterStatus('pendente', this)">⏳ Pend. Inativação</div>
+    <div class="filter-pill" onclick="filterStatus('inativo', this)">🚫 Inativos</div>
+  </div>
+
+  <div class="card">
+    <div class="table-wrap">
+      <table id="clientsTable">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Cliente</th>
+            <th>Total</th>
+            <th>Pedidos</th>
+            <th>Ticket Médio</th>
+            <th>Produto Top</th>
+            <th>Última Compra</th>
+            <th>Status</th>
+            <th>Ações</th>
+          </tr>
+        </thead>
+        <tbody id="clientsBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== ABANDONO ==================== -->
+<div id="page-abandono" class="page">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Risco de <span>Abandono</span></div>
+      <div style="font-size:13px;color:var(--muted);margin-top:4px">Clientes que precisam de atenção</div>
+    </div>
+    <button class="btn-print" onclick="printPage()">🖨️ Imprimir</button>
+  </div>
+  <div class="print-header" style="display:none">
+    <div><div class="ph-title">CRM Vendas — Risco de Abandono</div><div class="ph-sub">Análise de inatividade · Jales · 2024–2026</div></div>
+    <div class="ph-date" id="phDateAbandono"></div>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi-card red">
+      <div class="kpi-label">Abandonados (+90d)</div>
+      <div class="kpi-value" id="aband-kpi-90">—</div>
+      <div class="kpi-sub" id="aband-kpi-90-sub">ação urgente</div>
+    </div>
+    <div class="kpi-card" style="--kpi-c:var(--warn)">
+      <div class="kpi-card" style="position:absolute;inset:0;top:0;left:0;right:0;height:3px;background:var(--warn)"></div>
+      <div class="kpi-label">Em Risco (61–90d)</div>
+      <div class="kpi-value" style="color:var(--warn)" id="aband-kpi-6190">—</div>
+      <div class="kpi-sub">atenção necessária</div>
+    </div>
+    <div class="kpi-card yellow">
+      <div class="kpi-label">Atenção (31–60d)</div>
+      <div class="kpi-value" style="color:var(--accent2)" id="aband-kpi-3160">—</div>
+      <div class="kpi-sub">monitorar</div>
+    </div>
+    <div class="kpi-card green">
+      <div class="kpi-label">Ativos (0–30d)</div>
+      <div class="kpi-value" style="color:var(--accent3)" id="aband-kpi-030">—</div>
+      <div class="kpi-sub">compras recentes</div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">📊 Distribuição de Status</div>
+      </div>
+      <canvas id="chartAbandonoPie" height="260"></canvas>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">⚠️ Clientes Críticos</div>
+        <div class="card-sub">Mais de 60 dias sem compra</div>
+      </div>
+      <div id="criticosList"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Lista Completa — Todos os Status</div>
+    </div>
+    <div class="table-wrap">
+      <table id="abandonoTable">
+        <thead>
+          <tr>
+            <th>Cliente</th>
+            <th>Última Compra</th>
+            <th>Dias Inativo</th>
+            <th>Status</th>
+            <th>Valor Total</th>
+            <th>Produto Top</th>
+          </tr>
+        </thead>
+        <tbody id="abandonoBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== FLUXO ==================== -->
+<div id="page-fluxo" class="page">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Fluxo de <span>Vendas</span></div>
+      <div style="font-size:13px;color:var(--muted);margin-top:4px">Heatmap mês a mês · clique na linha para ver gráfico</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <div class="year-tabs">
+        <div class="year-tab active" id="fTab-cliente" onclick="switchFluxo('cliente',this)">Por Cliente</div>
+        <div class="year-tab" id="fTab-produto" onclick="switchFluxo('produto',this)">Por Produto</div>
+      </div>
+      <button class="btn-print" onclick="printPage()">🖨️ Imprimir</button>
+    </div>
+  </div>
+  <div class="print-header" style="display:none">
+    <div><div class="ph-title" id="phTitleFluxo">CRM Vendas — Fluxo de Vendas</div><div class="ph-sub">Heatmap mensal · Jales · 2024–2026</div></div>
+    <div class="ph-date" id="phDateFluxo"></div>
+  </div>
+
+  <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+    <input class="search-input" id="fluxoSearch" placeholder="🔍 Filtrar..." oninput="renderFluxo()" style="width:200px">
+    <div class="year-tabs" id="fluxoYearTabs">
+      <div class="year-tab active" onclick="setFluxoYear('all',this)">Todos</div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-left:auto">
+      ⬜ sem compra &nbsp;🟦 baixo &nbsp;🟩 alto · clique na linha para detalhar
+    </div>
+<div id="fluxoTopScroll" style="overflow-x:auto;overflow-y:hidden;height:12px;margin-bottom:4px;cursor:ew-resize" onscroll="document.getElementById('fluxoTableWrap').scrollLeft=this.scrollLeft">
+  <div id="fluxoTopScrollInner" style="height:1px"></div>
+</div>
+
+  </div>
+
+  <div class="card" id="fluxoChartCard" style="display:none;margin-bottom:16px">
+    <div class="card-header">
+      <div>
+        <div class="card-title" id="fluxoChartTitle">—</div>
+        <div class="card-sub">Evolução mensal</div>
+      </div>
+      <button onclick="document.getElementById('fluxoChartCard').style.display='none'"
+        style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:18px">✕</button>
+    </div>
+    <canvas id="fluxoLineChart" height="120"></canvas>
+  </div>
+
+  <div class="card" style="padding:16px">
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table id="fluxoTable" style="border-collapse:collapse;width:100%">
+        <thead id="fluxoHead"></thead>
+        <tbody id="fluxoBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="card-header">
+      <div class="card-title" id="fluxoTotalsTitle">Total por Mês</div>
+      <div class="card-sub">Soma consolidada dos itens exibidos</div>
+    </div>
+    <canvas id="fluxoBarChart" height="140"></canvas>
+  </div>
+</div>
+<!-- ==================== CRUZAMENTO ==================== -->
+<div id="page-cruzamento" class="page">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Cruzamento <span>Cliente × Produto</span></div>
+      <div style="font-size:13px;color:var(--muted);margin-top:4px">Relatório mensal de produtos por cliente</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <div class="year-tabs" id="cruzYearTabs">
+        <div class="year-tab active" onclick="setCruzYear('all',this)">Todos</div>
+        <div class="year-tab" onclick="setCruzYear('2024',this)">2024</div>
+        <div class="year-tab" onclick="setCruzYear('2025',this)">2025</div>
+        <div class="year-tab" onclick="setCruzYear('2026',this)">2026</div>
+      </div>
+      <button class="btn-print" onclick="printPage()">🖨️ Imprimir</button>
+    </div>
+  </div>
+  <div class="print-header" style="display:none">
+    <div><div class="ph-title" id="phTitleCruz">CRM Vendas — Cruzamento Cliente × Produto</div><div class="ph-sub" id="phSubCruz">Jales · 2024–2026</div></div>
+    <div class="ph-date" id="phDateCruz"></div>
+  </div>
+
+  <!-- Seletor de cliente -->
+  <div class="card" style="margin-bottom:16px;padding:16px 20px">
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <div style="font-size:13px;font-weight:700;color:var(--muted);white-space:nowrap">Cliente:</div>
+      <div style="position:relative;flex:1;min-width:220px;max-width:340px">
+        <input class="search-input" id="cruzSearch" placeholder="🔍 Buscar cliente..." oninput="filterCruzClientes()" style="width:100%">
+        <div id="cruzDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface2);border:1px solid var(--border);border-radius:8px;max-height:220px;overflow-y:auto;z-index:50;margin-top:4px"></div>
+      </div>
+      <div id="cruzClienteTag" style="background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.3);border-radius:8px;padding:6px 14px;font-weight:700;font-size:13px;color:var(--accent)">—</div>
+      <!-- KPIs inline -->
+      <div style="display:flex;gap:10px;margin-left:auto;flex-wrap:wrap">
+        <div style="text-align:center;padding:6px 14px;background:var(--surface2);border-radius:8px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px">Total</div>
+          <div id="cruzTotal" style="font-size:16px;font-weight:800;color:var(--accent)">—</div>
+        </div>
+        <div style="text-align:center;padding:6px 14px;background:var(--surface2);border-radius:8px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px">Produtos</div>
+          <div id="cruzProdQtd" style="font-size:16px;font-weight:800;color:var(--accent2)">—</div>
+        </div>
+        <div style="text-align:center;padding:6px 14px;background:var(--surface2);border-radius:8px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px">Meses ativos</div>
+          <div id="cruzMesesAtivos" style="font-size:16px;font-weight:800;color:var(--accent3)">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tabela cruzamento -->
+  <div class="card" style="padding:0;overflow:hidden">
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+      <table id="cruzTable" style="border-collapse:collapse;width:100%;min-width:800px">
+        <thead id="cruzHead"></thead>
+        <tbody id="cruzBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Mini gráficos por produto -->
+  <div style="margin-top:16px" id="cruzSparkCards"></div>
+</div>
+
+<!-- ==================== CATÁLOGO ==================== -->
+<div id="page-catalogo" class="page">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Catálogo de <span>Clientes</span></div>
+      <div style="font-size:13px;color:var(--muted);margin-top:4px">1.297 clientes · 131 cidades · 104 grupos — base completa de cadastro</div>
+    </div>
+    <button class="btn-print" onclick="printPage()">🖨️ Imprimir</button>
+  </div>
+  <div class="print-header" style="display:none">
+    <div><div class="ph-title">CRM Vendas — Catálogo de Clientes</div><div class="ph-sub">Base completa · 1.297 clientes · 131 cidades</div></div>
+    <div class="ph-date" id="phDateCatalogo"></div>
+  </div>
+
+  <!-- KPIs -->
+  <div class="kpi-grid" style="margin-bottom:16px">
+    <div class="kpi-card blue">
+      <div class="kpi-label">Clientes encontrados</div>
+      <div class="kpi-value" id="catKpiClientes">1.297</div>
+      <div class="kpi-sub">base total de cadastro</div>
+    </div>
+    <div class="kpi-card green">
+      <div class="kpi-label">Cidades</div>
+      <div class="kpi-value" id="catKpiCidades">131</div>
+      <div class="kpi-sub">praças atendidas</div>
+    </div>
+    <div class="kpi-card yellow">
+      <div class="kpi-label">Agrupados (com IDE)</div>
+      <div class="kpi-value" id="catKpiGrupos">226</div>
+      <div class="kpi-sub">duplicados identificados</div>
+    </div>
+    <div class="kpi-card red" style="--danger:var(--accent2)">
+      <div class="kpi-label">Grupos únicos</div>
+      <div class="kpi-value">104</div>
+      <div class="kpi-sub">IDEs distintos</div>
+    </div>
+  </div>
+
+  <!-- Filtros -->
+  <div class="card" style="margin-bottom:16px;padding:16px 20px">
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+      <input class="search-input" id="catalogSearchInput" placeholder="🔍 Buscar cliente ou cidade..." oninput="catalogSearch=this.value;buildCatalogSection()" style="flex:1;min-width:200px;max-width:360px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <label style="font-size:12px;color:var(--muted);white-space:nowrap">Cidade:</label>
+        <select id="catalogCitySelect" onchange="catalogCityFilter=this.value;buildCatalogSection()"
+          style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 12px;font-size:12px;font-family:'Syne',sans-serif;outline:none;cursor:pointer">
+          <option value="Todas">Todas as cidades</option>
+        </select>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer">
+        <input type="checkbox" id="catOnlyGruped" onchange="buildCatalogSection()" style="accent-color:var(--accent2)">
+        Apenas agrupados (IDE)
+      </label>
+    </div>
+  </div>
+
+  <!-- Grupos destacados (filtrado pela cidade selecionada) -->
+  <div id="catalogGruposSection" class="card" style="margin-bottom:16px;border-color:rgba(247,201,79,.25);background:rgba(247,201,79,.02)">
+    <div class="card-header">
+      <div class="card-title">🔗 Grupos Identificados</div>
+      <div class="card-sub" id="catalogGruposSubtitle">104 grupos com IDE na base completa</div>
+    </div>
+    <div id="catalogGruposContainer" style="display:flex;flex-wrap:wrap;gap:8px;max-height:240px;overflow-y:auto"></div>
+  </div>
+
+  <!-- Tabela principal -->
+  <div class="card" id="catalogContainer">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Cliente</th><th>Cidade</th><th>IDE / Grupo</th>
+          </tr>
+        </thead>
+        <tbody id="catalogBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+
 
 <!-- MODAL INATIVAÇÃO -->
 <div class="modal-overlay" id="inativModal">
