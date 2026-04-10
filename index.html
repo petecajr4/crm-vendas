@@ -3489,7 +3489,7 @@ function buildCidadeOutra(cidade) {
                     style="flex:1;background:${obs?'rgba(247,201,79,.15)':'rgba(107,118,153,.1)'};border:1px solid ${obs?'rgba(247,201,79,.3)':'var(--border)'};color:${obs?'var(--warn)':'var(--muted)'};border-radius:6px;padding:4px 5px;font-size:10px;cursor:pointer;font-family:'Syne',sans-serif;white-space:nowrap">
                     ${obs?'✏️':'+'} Anotar</button>
                 </div>
-                ${obs?`<div style="font-size:10px;color:var(--warn);font-style:italic;line-height:1.4;max-height:42px;overflow:hidden" title="${obs.replace(/"/g,'&quot;').replace(/'/g,'&#39;')}">📝 ${obs}</div>`:''}
+                ${obs?`<div style="font-size:10px;color:var(--warn);font-style:italic;line-height:1.4;max-height:42px;overflow:hidden" title="${obs}">📝 ${obs}</div>`:''}
               </td>
             </tr>`;
             }).join('');
@@ -4749,8 +4749,6 @@ function resetImport() {
 
 function abrirObs(nome) {
   const obs = DATA.obs[nome] || '';
-
-  // Monta estrutura sem colocar texto dinâmico via innerHTML (evita quebra por caracteres especiais)
   const content = document.getElementById('obsContent');
   content.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -4760,29 +4758,27 @@ function abrirObs(nome) {
       </div>
       <button onclick="fecharObs()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer">✕</button>
     </div>
-    <textarea id="obs-texto" placeholder="Ex: Ligamos dia 01/01/2026 - cliente comprou máquina e não tem mais interesse em revenda..." rows="5"
-      style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:13px;font-family:'Syne',sans-serif;resize:vertical;box-sizing:border-box;line-height:1.5;outline:none"></textarea>
+    <textarea id="obs-texto" rows="5"
+      style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:13px;font-family:'Syne',sans-serif;resize:vertical;box-sizing:border-box;line-height:1.5"></textarea>
     <div style="display:flex;gap:8px;margin-top:10px">
       <button id="btn-salvar-obs"
         style="flex:1;background:var(--accent);border:none;border-radius:6px;padding:9px;color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:'Syne',sans-serif">
         💾 Salvar
       </button>
       <button id="btn-limpar-obs"
-        style="display:${obs?'block':'none'};background:rgba(247,92,92,.15);border:1px solid rgba(247,92,92,.3);border-radius:6px;padding:9px 14px;color:var(--danger);font-size:13px;cursor:pointer;font-family:'Syne',sans-serif">
-        🗑️
+        style="background:rgba(247,92,92,.15);border:1px solid rgba(247,92,92,.3);border-radius:6px;padding:9px 14px;color:var(--danger);font-size:13px;cursor:pointer;font-family:'Syne',sans-serif;display:${obs ? 'inline-block' : 'none'}">
+        🗑️ Limpar tudo
       </button>
     </div>
     <div id="obs-feedback" style="margin-top:8px;font-size:11px;color:var(--accent3);text-align:center;min-height:16px"></div>
   `;
-
-  // Injeta texto via textContent/value — nunca via innerHTML (evita quebra com <, >, &, aspas)
+  // Injeta texto via .value — nunca innerHTML — evita quebra com < > & " no texto
   document.getElementById('obs-modal-nome').textContent = nome;
   document.getElementById('obs-texto').value = obs;
-
-  // Bind dos botões com closure — sem onclick inline, sem problema de escaping
+  document.getElementById('obs-texto').placeholder = 'Ex: Ligamos dia 01/01/2026 - cliente comprou máquina...';
+  // Closures: sem onclick inline, sem problema de escaping
   document.getElementById('btn-salvar-obs').onclick = () => salvarObs(nome);
   document.getElementById('btn-limpar-obs').onclick = () => limparObs(nome);
-
   document.getElementById('obsModal').style.display = 'flex';
   setTimeout(() => document.getElementById('obs-texto')?.focus(), 100);
 }
@@ -4797,17 +4793,29 @@ function salvarObs(nome) {
   const texto = document.getElementById('obs-texto').value.trim();
   if (texto) {
     DATA.obs[nome] = texto;
+    // Remove da lista de deletados — agora tem conteúdo explícito
+    if (DATA.obsDeletedByUser) delete DATA.obsDeletedByUser[nome];
+    try { localStorage.setItem('crm_obs_deleted', JSON.stringify(DATA.obsDeletedByUser||{})); } catch(e){}
   } else {
+    // Sem texto = usuário quer deletar
     delete DATA.obs[nome];
+    if (!DATA.obsDeletedByUser) DATA.obsDeletedByUser = {};
+    DATA.obsDeletedByUser[nome] = Date.now();
+    try { localStorage.setItem('crm_obs_deleted', JSON.stringify(DATA.obsDeletedByUser)); } catch(e){}
   }
   persistObs();
   const fb = document.getElementById('obs-feedback');
-  if (fb) fb.textContent = '✅ Anotação salva!';
+  if (fb) { fb.style.color = 'var(--accent3)'; fb.textContent = '✅ Anotação salva!'; }
   setTimeout(fecharObs, 800);
 }
 
 function limparObs(nome) {
   delete DATA.obs[nome];
+  // Marca que este cliente foi limpo intencionalmente — sync não pode restaurar
+  if (!DATA.obsDeletedByUser) DATA.obsDeletedByUser = {};
+  DATA.obsDeletedByUser[nome] = Date.now();
+  try { localStorage.setItem('crm_obs_deleted', JSON.stringify(DATA.obsDeletedByUser)); } catch(e){}
+  persistObs();
   fecharObs();
 }
 
@@ -5014,6 +5022,9 @@ async function _syncCore() {
     try { localObs   = JSON.parse(localStorage.getItem('crm_obs')    || '{}'); } catch(e){}
     try { localDesc  = JSON.parse(localStorage.getItem('crm_desc')   || '{}'); } catch(e){}
     try { localStatus= JSON.parse(localStorage.getItem('crm_status') || '{}'); } catch(e){}
+    // Carrega lista de obs deletados intencionalmente pelo usuário
+    if (!DATA.obsDeletedByUser) DATA.obsDeletedByUser = {};
+    try { Object.assign(DATA.obsDeletedByUser, JSON.parse(localStorage.getItem('crm_obs_deleted') || '{}')); } catch(e){}
     Object.assign(DATA.obs,        localObs);
     Object.assign(DATA.descSaved   ||= {}, localDesc);
     Object.assign(DATA.statusSaved ||= {}, localStatus);
@@ -5047,6 +5058,15 @@ async function _syncCore() {
       if (localObs[nome])    DATA.obs[nome]          = localObs[nome];
       if (localDesc[nome])   DATA.descSaved[nome]    = localDesc[nome];
       if (localStatus[nome]) DATA.statusSaved[nome]  = localStatus[nome];
+
+      // Se usuário limpou manualmente, pula — não restaura do TicketFlow
+      if (DATA.obsDeletedByUser && DATA.obsDeletedByUser[nome]) {
+        DATA.statusSaved[nome] = t.status || 'aberto';
+        localStatus[nome] = t.status || 'aberto';
+        DATA.descSaved[nome] = (t.desc || '').trim();
+        localDesc[nome] = (t.desc || '').trim();
+        return; // forEach usa return em vez de continue
+      }
 
       let obs = DATA.obs[nome] || '';
       let changed = false;
@@ -5118,7 +5138,7 @@ async function sincronizarTickets() {
 }
 
 async function sincronizarTicketsSilencioso() {
-  // Não sincroniza enquanto modal de anotação está aberto (evita sobrescrever texto em edição)
+  // Não sincroniza com modal de anotação aberto (evita sobrescrever o que o usuário está digitando)
   const obsModal = document.getElementById('obsModal');
   if (obsModal && obsModal.style.display === 'flex') return;
   const n=await _syncCore();
