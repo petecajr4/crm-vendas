@@ -4760,11 +4760,11 @@ function abrirObs(nome) {
     <textarea id="obs-texto" placeholder="Ex: Ligamos dia 01/01/2026 - cliente comprou máquina e não tem mais interesse em revenda..." rows="5"
       style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:13px;font-family:'Syne',sans-serif;resize:vertical;box-sizing:border-box;line-height:1.5">${obs}</textarea>
     <div style="display:flex;gap:8px;margin-top:10px">
-      <button onclick="salvarObs('${nome.replace(/'/g, "\'")}')"
+      <button id="btn-salvar-obs" data-nome-obs="${nome.replace(/"/g, '&quot;')}"
         style="flex:1;background:var(--accent);border:none;border-radius:6px;padding:9px;color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:'Syne',sans-serif">
         💾 Salvar
       </button>
-      ${obs ? `<button onclick="limparObs('${nome.replace(/'/g, "\'")}')"
+      ${obs ? `<button id="btn-limpar-obs" data-nome-obs="${nome.replace(/"/g, '&quot;')}"
         style="background:rgba(247,92,92,.15);border:1px solid rgba(247,92,92,.3);border-radius:6px;padding:9px 14px;color:var(--danger);font-size:13px;cursor:pointer;font-family:'Syne',sans-serif">
         🗑️
       </button>` : ''}
@@ -4772,25 +4772,57 @@ function abrirObs(nome) {
     <div id="obs-feedback" style="margin-top:8px;font-size:11px;color:var(--accent3);text-align:center;min-height:16px"></div>
   `;
   document.getElementById('obsModal').style.display = 'flex';
-  setTimeout(() => document.getElementById('obs-texto')?.focus(), 100);
+  setTimeout(() => {
+    document.getElementById('obs-texto')?.focus();
+    // Bind botões via data-nome (evita problema de escaping com apóstrofo no nome)
+    const btnSalvar = document.getElementById('btn-salvar-obs');
+    if (btnSalvar) btnSalvar.onclick = () => salvarObs(btnSalvar.dataset.nomeObs);
+    const btnLimpar = document.getElementById('btn-limpar-obs');
+    if (btnLimpar) btnLimpar.onclick = () => limparObs(btnLimpar.dataset.nomeObs);
+  }, 100);
 }
 
 function fecharObs() {
   document.getElementById('obsModal').style.display = 'none';
   // Rebuild cidade table to show updated annotation
   try { if(cidadeAtual && !['Geral'].includes(cidadeAtual)) buildCidadeOutra(cidadeAtual); } catch(e){}
+  try { buildClientsTable(); } catch(e){}
 }
 
-function salvarObs(nome) {
+async function salvarObs(nome) {
   const texto = document.getElementById('obs-texto').value.trim();
+  const fb = document.getElementById('obs-feedback');
+
   if (texto) {
     DATA.obs[nome] = texto;
   } else {
     delete DATA.obs[nome];
   }
   persistObs();
-  const fb = document.getElementById('obs-feedback');
-  if (fb) fb.textContent = '✅ Anotação salva!';
+
+  if (fb) { fb.style.color = 'var(--accent3)'; fb.textContent = '✅ Anotação salva!'; }
+
+  // Tenta salvar como comentário no TicketFlow (se houver ticket Recontato ativo para este cliente)
+  try {
+    const r = await fetch(TICKET_API + '?action=getAll&t=' + Date.now(), {method:'GET', redirect:'follow'});
+    const d = _parseJSON(await r.text());
+    const allT = d?.tickets || d || [];
+    const ticket = allT.find(t => !t.deleted && t.assunto === 'Recontato: ' + nome && t.status !== 'finalizado');
+    if (ticket && texto) {
+      // Descobre qual linha é nova (última linha da anotação)
+      const linhas = texto.split('\n');
+      const ultimaLinha = linhas[linhas.length - 1].trim();
+      if (ultimaLinha) {
+        const commentUrl = TICKET_API + '?action=addComment&payload=' + encodeURIComponent(JSON.stringify({
+          action: 'addComment',
+          ticketId: ticket.id,
+          comment: { text: ultimaLinha, author: 'CRM', createdAt: new Date().toISOString() }
+        })) + '&t=' + Date.now();
+        await fetch(commentUrl, {method:'GET', redirect:'follow'});
+      }
+    }
+  } catch(e) { /* falha silenciosa — obs já foi salva localmente */ }
+
   setTimeout(fecharObs, 800);
 }
 
@@ -5106,6 +5138,9 @@ async function sincronizarTickets() {
 }
 
 async function sincronizarTicketsSilencioso() {
+  // Não sincroniza enquanto modal de anotação está aberto (evita sobrescrever texto em edição)
+  const obsModal = document.getElementById('obsModal');
+  if (obsModal && obsModal.style.display === 'flex') return;
   const n=await _syncCore();
   const el=document.getElementById('syncStatus');
   const h=new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
