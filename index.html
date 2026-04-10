@@ -3452,15 +3452,32 @@ function buildCidadeOutra(cidade) {
     </div>
 
     <div class="card" style="margin-top:16px">
-      <div class="card-header" style="flex-wrap:wrap;gap:10px">
-        <div class="card-title">Todos os Clientes</div>
+      <div class="card-header" style="flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div class="card-title">Todos os Clientes</div>
+          <button onclick="exportarExcelCidade()" id="btn-export-excel"
+            style="display:flex;align-items:center;gap:5px;padding:6px 13px;border-radius:7px;background:rgba(79,222,142,.1);border:1px solid rgba(79,222,142,.3);color:var(--accent3);font-family:'Syne',sans-serif;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;transition:all .15s"
+            onmouseover="this.style.background='rgba(79,222,142,.2)';this.style.borderColor='var(--accent3)'"
+            onmouseout="this.style.background='rgba(79,222,142,.1)';this.style.borderColor='rgba(79,222,142,.3)'">
+            📊 Exportar Excel
+          </button>
+        </div>
         <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
-          <span style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px">Status:</span>
-          ${[['todos','Todos','var(--accent)'],['0-15 dias','0-15d','var(--accent3)'],['16-30 dias','16-30d','#4fde8e'],['31-60 dias','31-60d','var(--accent2)'],['61-90 dias','61-90d','var(--warn)'],['Abandonado','Aband.','var(--danger)']].map(([s,label,cor])=>{
+          ${[
+            ['todos',     '● Todos',      'var(--accent)',  'rgba(79,142,247,0.18)'],
+            ['0-15 dias', '● 0-15d',      '#4fde8e',        'rgba(79,222,142,0.18)'],
+            ['16-30 dias','● 16-30d',     '#4fde8e',        'rgba(79,222,142,0.12)'],
+            ['31-60 dias','● 31-60d',     'var(--accent2)', 'rgba(247,201,79,0.18)'],
+            ['61-90 dias','● 61-90d',     'var(--warn)',    'rgba(247,156,79,0.18)'],
+            ['Abandonado','● Abandonado', 'var(--danger)',  'rgba(247,92,92,0.18)'],
+          ].map(([s,label,cor,bgOn])=>{
             const isActive = s==='todos' ? selectedCidadeStatus.size===0 : selectedCidadeStatus.has(s);
-            const bgActive = s==='todos'?'rgba(79,142,247,0.2)': s==='0-15 dias'?'rgba(79,222,142,0.2)': s==='16-30 dias'?'rgba(79,222,142,0.15)': s==='31-60 dias'?'rgba(247,167,79,0.2)': s==='61-90 dias'?'rgba(247,201,79,0.2)':'rgba(247,92,92,0.2)';
             return `<button class="cid-status-btn" data-status="${s}" onclick="toggleCidadeStatus('${s}',this)"
-              style="padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Syne',sans-serif;border:1px solid ${isActive?cor:'var(--border)'};background:${isActive?bgActive:'transparent'};color:${isActive?cor:'var(--muted)'}">
+              style="padding:5px 13px;border-radius:20px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Syne',sans-serif;white-space:nowrap;transition:all .15s;
+                     border:1px solid ${isActive ? cor : 'var(--border)'};
+                     background:${isActive ? bgOn : 'transparent'};
+                     color:${isActive ? cor : 'var(--muted)'};
+                     box-shadow:${isActive ? '0 0 8px '+cor+'44' : 'none'}">
               ${label}</button>`;
           }).join('')}
         </div>
@@ -3489,7 +3506,7 @@ function buildCidadeOutra(cidade) {
                     style="flex:1;background:${obs?'rgba(247,201,79,.15)':'rgba(107,118,153,.1)'};border:1px solid ${obs?'rgba(247,201,79,.3)':'var(--border)'};color:${obs?'var(--warn)':'var(--muted)'};border-radius:6px;padding:4px 5px;font-size:10px;cursor:pointer;font-family:'Syne',sans-serif;white-space:nowrap">
                     ${obs?'✏️':'+'} Anotar</button>
                 </div>
-                ${obs?`<div style="font-size:10px;color:var(--warn);font-style:italic;line-height:1.4;max-height:42px;overflow:hidden" title="${obs}">📝 ${obs}</div>`:''}
+                ${obs?`<div style="font-size:10px;color:var(--warn);font-style:italic;line-height:1.4;max-height:42px;overflow:hidden" title="${obs.replace(/"/g,'&quot;').replace(/'/g,'&#39;')}">📝 ${obs}</div>`:''}
               </td>
             </tr>`;
             }).join('');
@@ -4749,73 +4766,53 @@ function resetImport() {
 
 function abrirObs(nome) {
   const obs = DATA.obs[nome] || '';
-  const content = document.getElementById('obsContent');
-  content.innerHTML = `
+  document.getElementById('obsContent').innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div>
         <div style="font-size:10px;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px">📝 Anotação</div>
-        <div id="obs-modal-nome" style="font-size:16px;font-weight:800"></div>
+        <div style="font-size:16px;font-weight:800">${nome}</div>
       </div>
       <button onclick="fecharObs()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer">✕</button>
     </div>
-    <textarea id="obs-texto" rows="5"
-      style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:13px;font-family:'Syne',sans-serif;resize:vertical;box-sizing:border-box;line-height:1.5"></textarea>
+    <textarea id="obs-texto" placeholder="Ex: Ligamos dia 01/01/2026 - cliente comprou máquina e não tem mais interesse em revenda..." rows="5"
+      style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:13px;font-family:'Syne',sans-serif;resize:vertical;box-sizing:border-box;line-height:1.5">${obs}</textarea>
     <div style="display:flex;gap:8px;margin-top:10px">
-      <button id="btn-salvar-obs"
+      <button onclick="salvarObs('${nome.replace(/'/g, "\'")}')"
         style="flex:1;background:var(--accent);border:none;border-radius:6px;padding:9px;color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:'Syne',sans-serif">
         💾 Salvar
       </button>
-      <button id="btn-limpar-obs"
-        style="background:rgba(247,92,92,.15);border:1px solid rgba(247,92,92,.3);border-radius:6px;padding:9px 14px;color:var(--danger);font-size:13px;cursor:pointer;font-family:'Syne',sans-serif;display:${obs ? 'inline-block' : 'none'}">
-        🗑️ Limpar tudo
-      </button>
+      ${obs ? `<button onclick="limparObs('${nome.replace(/'/g, "\'")}')"
+        style="background:rgba(247,92,92,.15);border:1px solid rgba(247,92,92,.3);border-radius:6px;padding:9px 14px;color:var(--danger);font-size:13px;cursor:pointer;font-family:'Syne',sans-serif">
+        🗑️
+      </button>` : ''}
     </div>
     <div id="obs-feedback" style="margin-top:8px;font-size:11px;color:var(--accent3);text-align:center;min-height:16px"></div>
   `;
-  // Injeta texto via .value — nunca innerHTML — evita quebra com < > & " no texto
-  document.getElementById('obs-modal-nome').textContent = nome;
-  document.getElementById('obs-texto').value = obs;
-  document.getElementById('obs-texto').placeholder = 'Ex: Ligamos dia 01/01/2026 - cliente comprou máquina...';
-  // Closures: sem onclick inline, sem problema de escaping
-  document.getElementById('btn-salvar-obs').onclick = () => salvarObs(nome);
-  document.getElementById('btn-limpar-obs').onclick = () => limparObs(nome);
   document.getElementById('obsModal').style.display = 'flex';
   setTimeout(() => document.getElementById('obs-texto')?.focus(), 100);
 }
 
 function fecharObs() {
   document.getElementById('obsModal').style.display = 'none';
+  // Rebuild cidade table to show updated annotation
   try { if(cidadeAtual && !['Geral'].includes(cidadeAtual)) buildCidadeOutra(cidadeAtual); } catch(e){}
-  try { buildClientsTable(); } catch(e){}
 }
 
 function salvarObs(nome) {
   const texto = document.getElementById('obs-texto').value.trim();
   if (texto) {
     DATA.obs[nome] = texto;
-    // Remove da lista de deletados — agora tem conteúdo explícito
-    if (DATA.obsDeletedByUser) delete DATA.obsDeletedByUser[nome];
-    try { localStorage.setItem('crm_obs_deleted', JSON.stringify(DATA.obsDeletedByUser||{})); } catch(e){}
   } else {
-    // Sem texto = usuário quer deletar
     delete DATA.obs[nome];
-    if (!DATA.obsDeletedByUser) DATA.obsDeletedByUser = {};
-    DATA.obsDeletedByUser[nome] = Date.now();
-    try { localStorage.setItem('crm_obs_deleted', JSON.stringify(DATA.obsDeletedByUser)); } catch(e){}
   }
   persistObs();
   const fb = document.getElementById('obs-feedback');
-  if (fb) { fb.style.color = 'var(--accent3)'; fb.textContent = '✅ Anotação salva!'; }
+  if (fb) fb.textContent = '✅ Anotação salva!';
   setTimeout(fecharObs, 800);
 }
 
 function limparObs(nome) {
   delete DATA.obs[nome];
-  // Marca que este cliente foi limpo intencionalmente — sync não pode restaurar
-  if (!DATA.obsDeletedByUser) DATA.obsDeletedByUser = {};
-  DATA.obsDeletedByUser[nome] = Date.now();
-  try { localStorage.setItem('crm_obs_deleted', JSON.stringify(DATA.obsDeletedByUser)); } catch(e){}
-  persistObs();
   fecharObs();
 }
 
@@ -4852,6 +4849,303 @@ function exportarHTML() {
 
 
 
+
+// ==================== EXPORTAR EXCEL — POR CIDADE ====================
+function exportarExcelCidade() {
+  const btn = document.getElementById('btn-export-excel');
+  if (btn) { btn.textContent = '\u23f3 Gerando...'; btn.disabled = true; }
+  try {
+    const all = allClientsConsolidated();
+    const cidadeUpper = cidadeAtual.toUpperCase();
+    let clients = all.filter(c => {
+      const cid = (c.cidade||'').toUpperCase();
+      if (cidadeUpper === 'JALES') return cid === 'JALES' || cid === '';
+      return cid === cidadeUpper;
+    }).sort((a,b) => b.total - a.total);
+    if (selectedCidadeStatus.size > 0)
+      clients = clients.filter(c => selectedCidadeStatus.has(c.status));
+    if (!clients.length) {
+      showToast('Nenhum cliente para exportar com o filtro atual.', 'warn');
+      if (btn) { btn.textContent = '\ud83d\udcca Exportar Excel'; btn.disabled = false; }
+      return;
+    }
+
+    const hoje = new Date().toLocaleDateString('pt-BR');
+    const cidNome = cidadeAtual.charAt(0).toUpperCase() + cidadeAtual.slice(1).toLowerCase();
+    const filtroStr = selectedCidadeStatus.size > 0 ? [...selectedCidadeStatus].join('+').replace(/ /g,'') : 'Todos';
+
+    // Estilos por status: fillId referencia fills definidos no styles.xml
+    // Mapeamento: status -> { fill bg, font color }
+    const statusFill = {
+      '0-15 dias':  { bg:'FF1a4d2e', fg:'FF4fde8e' },
+      '16-30 dias': { bg:'FF163320', fg:'FF4fde8e' },
+      '31-60 dias': { bg:'FF3d3200', fg:'FFf7c94f' },
+      '61-90 dias': { bg:'FF3d1e00', fg:'FFf79c4f' },
+      'Abandonado': { bg:'FF3d0a0a', fg:'FFf75c5c' },
+      'Sem vendas': { bg:'FF1c2030', fg:'FF6b7699' },
+    };
+
+    // Coleta todos os status únicos presentes
+    const uniqueStatus = [...new Set(clients.map(c => c.status))];
+
+    // XML helper
+    const xesc = s => String(s==null?'':s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+
+    // Shared strings
+    const sharedStrings = [];
+    const ssMap = {};
+    const ss = v => {
+      const s = String(v==null?'':v);
+      if (ssMap[s] === undefined) { ssMap[s] = sharedStrings.length; sharedStrings.push(s); }
+      return ssMap[s];
+    };
+
+    // Pré-popula shared strings dos headers e dados
+    const headers = ['#','Cliente','Cidade','Último Produto','Última Compra','Dias Inativo','Status','Anotação CRM'];
+    headers.forEach(ss);
+    clients.forEach((c,i) => {
+      ss(i+1);
+      ss(c.nome); ss(c.cidade||cidadeAtual); ss(c.top_prod||'');
+      ss(c.ultima_compra||''); ss(c.status);
+      ss((DATA.obs&&DATA.obs[c.nome])||'');
+    });
+
+    // Build styles.xml
+    // Fills: 0=none, 1=gray(default), então os nossos a partir do índice 2
+    const statusList = ['0-15 dias','16-30 dias','31-60 dias','61-90 dias','Abandonado','Sem vendas'];
+    let fillsXml = '<fills count="' + (statusList.length + 2) + '">';
+    fillsXml += '<fill><patternFill patternType="none"/></fill>';
+    fillsXml += '<fill><patternFill patternType="gray125"/></fill>';
+    statusList.forEach(s => {
+      const f = statusFill[s] || { bg:'FF1c2030', fg:'FFe8ecf5' };
+      fillsXml += '<fill><patternFill patternType="solid"><fgColor rgb="' + f.bg + '"/><bgColor indexed="64"/></patternFill></fill>';
+    });
+    fillsXml += '</fills>';
+
+    // Fonts: 0=default, 1=header bold, depois uma por status
+    let fontsXml = '<fonts count="' + (statusList.length + 2) + '">';
+    fontsXml += '<font><sz val="11"/><name val="Calibri"/></font>';
+    fontsXml += '<font><b/><sz val="11"/><name val="Calibri"/></font>';
+    statusList.forEach(s => {
+      const f = statusFill[s] || { fg:'FFe8ecf5' };
+      fontsXml += '<font><b/><sz val="11"/><color rgb="' + f.fg + '"/><name val="Calibri"/></font>';
+    });
+    fontsXml += '</fonts>';
+
+    // CellXfs: xf index -> estilo
+    // 0 = default, 1 = header (bold, fill gray header), depois um por status
+    const headerFillIdx = 2 + statusList.length; // adiciona fill de cabeçalho depois
+    let xfsXml = '<cellXfs count="' + (statusList.length + 3) + '">';
+    xfsXml += '<xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>'; // 0: default
+    xfsXml += '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" applyFont="1"/>'; // 1: bold (header)
+    statusList.forEach((s, i) => {
+      xfsXml += '<xf numFmtId="0" fontId="' + (i+2) + '" fillId="' + (i+2) + '" borderId="0" applyFont="1" applyFill="1"/>'; // 2..N: por status
+    });
+    xfsXml += '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" applyAlignment="1"><alignment wrapText="1"/></xf>'; // wrap text para anotações
+    xfsXml += '</cellXfs>';
+
+    const stylesXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+      + fontsXml
+      + fillsXml
+      + '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+      + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+      + xfsXml
+      + '</styleSheet>';
+
+    // Mapa status -> xf index (começa em 2)
+    const statusXf = {};
+    statusList.forEach((s,i) => { statusXf[s] = i + 2; });
+    const wrapXf = statusList.length + 2;
+
+    // Build sheet rows
+    const colLetter = i => String.fromCharCode(65 + i); // A, B, C...
+    let rowsXml = '';
+
+    // Header row (row 1)
+    rowsXml += '<row r="1">';
+    headers.forEach((h, ci) => {
+      rowsXml += '<c r="' + colLetter(ci) + '1" t="s" s="1"><v>' + ss(h) + '</v></c>';
+    });
+    rowsXml += '</row>';
+
+    // Data rows
+    clients.forEach((c, ri) => {
+      const row = ri + 2;
+      const stXf = statusXf[c.status] || 0;
+      const diasVal = c.dias_inativo != null ? c.dias_inativo : '';
+      const diasIsNum = typeof diasVal === 'number';
+
+      rowsXml += '<row r="' + row + '">';
+      rowsXml += '<c r="A' + row + '" t="n"><v>' + (ri+1) + '</v></c>';
+      rowsXml += '<c r="B' + row + '" t="s"><v>' + ss(c.nome) + '</v></c>';
+      rowsXml += '<c r="C' + row + '" t="s"><v>' + ss(c.cidade||cidadeAtual) + '</v></c>';
+      rowsXml += '<c r="D' + row + '" t="s"><v>' + ss(c.top_prod||'') + '</v></c>';
+      rowsXml += '<c r="E' + row + '" t="s"><v>' + ss(c.ultima_compra||'') + '</v></c>';
+      if (diasIsNum) {
+        rowsXml += '<c r="F' + row + '" t="n"><v>' + diasVal + '</v></c>';
+      } else {
+        rowsXml += '<c r="F' + row + '" t="s"><v>' + ss('') + '</v></c>';
+      }
+      rowsXml += '<c r="G' + row + '" t="s" s="' + stXf + '"><v>' + ss(c.status) + '</v></c>';
+      const obs = (DATA.obs && DATA.obs[c.nome]) || '';
+      rowsXml += '<c r="H' + row + '" t="s" s="' + wrapXf + '"><v>' + ss(obs) + '</v></c>';
+      rowsXml += '</row>';
+    });
+
+    // Shared strings xml
+    const ssXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="' + sharedStrings.length + '" uniqueCount="' + sharedStrings.length + '">'
+      + sharedStrings.map(s => '<si><t xml:space="preserve">' + xesc(s) + '</t></si>').join('')
+      + '</sst>';
+
+    const sheetXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+      + '<cols>'
+      + '<col min="1" max="1" width="5" customWidth="1"/>'
+      + '<col min="2" max="2" width="36" customWidth="1"/>'
+      + '<col min="3" max="3" width="16" customWidth="1"/>'
+      + '<col min="4" max="4" width="24" customWidth="1"/>'
+      + '<col min="5" max="5" width="14" customWidth="1"/>'
+      + '<col min="6" max="6" width="12" customWidth="1"/>'
+      + '<col min="7" max="7" width="18" customWidth="1"/>'
+      + '<col min="8" max="8" width="50" customWidth="1"/>'
+      + '</cols>'
+      + '<sheetData>' + rowsXml + '</sheetData>'
+      + '<sheetView workbookViewId="0"><selection activeCell="A1"/></sheetView>'
+      + '</worksheet>';
+
+    const wbXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+      + 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+      + '<sheets><sheet name="Clientes" sheetId="1" r:id="rId1"/></sheets>'
+      + '</workbook>';
+
+    const relsWb = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+      + '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>'
+      + '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+      + '</Relationships>';
+
+    const relsRoot = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+      + '</Relationships>';
+
+    const contentTypes = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+      + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+      + '<Default Extension="xml" ContentType="application/xml"/>'
+      + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+      + '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+      + '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+      + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+      + '</Types>';
+
+    // Monta ZIP manualmente (sem biblioteca externa)
+    function strToBytes(str) {
+      return new TextEncoder().encode(str);
+    }
+
+    function makeZip(files) {
+      // files: [{name, data: Uint8Array}]
+      const localHeaders = [];
+      let offset = 0;
+      const centralDir = [];
+
+      function crc32(buf) {
+        let c = 0xFFFFFFFF;
+        const table = makeZip._crc || (makeZip._crc = (() => {
+          const t = new Uint32Array(256);
+          for (let i=0;i<256;i++){let c=i;for(let j=0;j<8;j++)c=c&1?(0xEDB88320^(c>>>1)):(c>>>1);t[i]=c;}
+          return t;
+        })());
+        for (let i=0;i<buf.length;i++) c = table[(c^buf[i])&0xFF]^(c>>>8);
+        return (c^0xFFFFFFFF)>>>0;
+      }
+
+      function u16(n){const b=new Uint8Array(2);new DataView(b.buffer).setUint16(0,n,true);return b;}
+      function u32(n){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,true);return b;}
+
+      function concat(...arrays) {
+        const len = arrays.reduce((s,a)=>s+a.length,0);
+        const out = new Uint8Array(len);
+        let pos=0; arrays.forEach(a=>{out.set(a,pos);pos+=a.length;}); return out;
+      }
+
+      for (const {name, data} of files) {
+        const nameBytes = new TextEncoder().encode(name);
+        const crc = crc32(data);
+        const localHeader = concat(
+          new Uint8Array([0x50,0x4B,0x03,0x04]), // signature
+          u16(20), // version needed
+          u16(0),  // flags
+          u16(0),  // compression: stored
+          u16(0), u16(0), // mod time/date
+          u32(crc),
+          u32(data.length), u32(data.length),
+          u16(nameBytes.length), u16(0),
+          nameBytes
+        );
+        centralDir.push({nameBytes, crc, size: data.length, offset});
+        localHeaders.push(concat(localHeader, data));
+        offset += localHeader.length + data.length;
+      }
+
+      const centralStart = offset;
+      const centralEntries = centralDir.map(({nameBytes, crc, size, offset: off}) =>
+        concat(
+          new Uint8Array([0x50,0x4B,0x01,0x02]),
+          u16(20), u16(20), u16(0), u16(0),
+          u16(0), u16(0),
+          u32(crc), u32(size), u32(size),
+          u16(nameBytes.length), u16(0), u16(0),
+          u16(0), u16(0), u32(0),
+          u32(off), nameBytes
+        )
+      );
+
+      const centralBytes = concat(...centralEntries);
+      const eocd = concat(
+        new Uint8Array([0x50,0x4B,0x05,0x06]),
+        u16(0), u16(0),
+        u16(centralDir.length), u16(centralDir.length),
+        u32(centralBytes.length), u32(centralStart),
+        u16(0)
+      );
+
+      return concat(...localHeaders, centralBytes, eocd);
+    }
+
+    const zipBytes = makeZip([
+      { name: '[Content_Types].xml',            data: strToBytes(contentTypes) },
+      { name: '_rels/.rels',                     data: strToBytes(relsRoot) },
+      { name: 'xl/workbook.xml',                 data: strToBytes(wbXml) },
+      { name: 'xl/_rels/workbook.xml.rels',      data: strToBytes(relsWb) },
+      { name: 'xl/worksheets/sheet1.xml',        data: strToBytes(sheetXml) },
+      { name: 'xl/sharedStrings.xml',            data: strToBytes(ssXml) },
+      { name: 'xl/styles.xml',                   data: strToBytes(stylesXml) },
+    ]);
+
+    const blob = new Blob([zipBytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'CRM_' + cidNome + '_' + filtroStr + '_' + hoje.replace(/\//g,'-') + '.xlsx';
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('\u2705 ' + clients.length + ' clientes exportados com cores!', 'ok');
+
+  } catch(err) {
+    showToast('\u274c Erro: ' + err.message, 'warn');
+    console.error(err);
+  } finally {
+    if (btn) { btn.textContent = '\ud83d\udcca Exportar Excel'; btn.disabled = false; }
+  }
+}
 // ==================== INTEGRAÇÃO TICKETFLOW ====================
 const TICKET_API = 'https://script.google.com/macros/s/AKfycby3EY-mk4FmQZxi3AYUj_pbUPjzDNonrIZPt4aeGttRJYDhpNKT57qfbziptX8Jc2Q/exec';
 const TICKET_VENDEDORES = ['Denis', 'Reginaldo', 'Anderson', 'Anne', 'Lex', 'Emerson', 'Cassia', 'Anna', 'Alisson', 'Pardal', 'Tiago'];
@@ -5022,9 +5316,6 @@ async function _syncCore() {
     try { localObs   = JSON.parse(localStorage.getItem('crm_obs')    || '{}'); } catch(e){}
     try { localDesc  = JSON.parse(localStorage.getItem('crm_desc')   || '{}'); } catch(e){}
     try { localStatus= JSON.parse(localStorage.getItem('crm_status') || '{}'); } catch(e){}
-    // Carrega lista de obs deletados intencionalmente pelo usuário
-    if (!DATA.obsDeletedByUser) DATA.obsDeletedByUser = {};
-    try { Object.assign(DATA.obsDeletedByUser, JSON.parse(localStorage.getItem('crm_obs_deleted') || '{}')); } catch(e){}
     Object.assign(DATA.obs,        localObs);
     Object.assign(DATA.descSaved   ||= {}, localDesc);
     Object.assign(DATA.statusSaved ||= {}, localStatus);
@@ -5058,15 +5349,6 @@ async function _syncCore() {
       if (localObs[nome])    DATA.obs[nome]          = localObs[nome];
       if (localDesc[nome])   DATA.descSaved[nome]    = localDesc[nome];
       if (localStatus[nome]) DATA.statusSaved[nome]  = localStatus[nome];
-
-      // Se usuário limpou manualmente, pula — não restaura do TicketFlow
-      if (DATA.obsDeletedByUser && DATA.obsDeletedByUser[nome]) {
-        DATA.statusSaved[nome] = t.status || 'aberto';
-        localStatus[nome] = t.status || 'aberto';
-        DATA.descSaved[nome] = (t.desc || '').trim();
-        localDesc[nome] = (t.desc || '').trim();
-        return; // forEach usa return em vez de continue
-      }
 
       let obs = DATA.obs[nome] || '';
       let changed = false;
@@ -5138,9 +5420,6 @@ async function sincronizarTickets() {
 }
 
 async function sincronizarTicketsSilencioso() {
-  // Não sincroniza com modal de anotação aberto (evita sobrescrever o que o usuário está digitando)
-  const obsModal = document.getElementById('obsModal');
-  if (obsModal && obsModal.style.display === 'flex') return;
   const n=await _syncCore();
   const el=document.getElementById('syncStatus');
   const h=new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
