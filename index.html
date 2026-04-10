@@ -4280,15 +4280,25 @@ function buildFluxoBar(months, totals) {
   });
 }
 
+let _syncInterval = null;
+
 function showPage(page) {
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   document.getElementById('page-'+page).classList.add('active');
   document.querySelector(`[data-page="${page}"]`).classList.add('active');
 
+  // Stop any existing sync interval
+  if(_syncInterval) { clearInterval(_syncInterval); _syncInterval = null; }
+
   // Build charts on demand
   if(page === 'dashboard') { buildDashboardKPIs(); buildMonthlyChart(); buildYearlyChart(); buildProductsChart(); buildTopClients(); }
-  if(page === 'cidades') { buildCidadeTabs(); const _btn=document.querySelector('#cidTabsContainer .cid-tab-btn'); selectCidade('Geral', _btn); }
+  if(page === 'cidades') {
+    buildCidadeTabs(); const _btn=document.querySelector('#cidTabsContainer .cid-tab-btn'); selectCidade('Geral', _btn);
+    // Start auto-sync: run immediately then every 10s
+    sincronizarTicketsSilencioso();
+    _syncInterval = setInterval(sincronizarTicketsSilencioso, 10000);
+  }
   if(page === 'produtos') { renderProdView(); }
   if(page === 'clientes') {
     buildClientsTable(); buildGrupos();
@@ -4986,7 +4996,8 @@ async function _syncCore() {
     const r = await fetch(TICKET_API + '?action=getAll&t=' + Date.now(), {method:'GET',redirect:'follow'});
     const txt = await r.text();
     let d; try{d=JSON.parse(txt);}catch(_){const s=txt.indexOf('{')>=0?txt.indexOf('{'):txt.indexOf('[');if(s!==-1)d=JSON.parse(txt.slice(s));}
-    const tickets = (d?.tickets||d||[]).filter(t=>!t.deleted&&t.assunto&&t.assunto.startsWith('Recontato:'));
+    const allT = d?.tickets||d||[];
+    const tickets = allT.filter(t=>!t.deleted&&t.assunto&&t.assunto.startsWith('Recontato:'));
     if(!tickets.length) return 0;
 
     if(!DATA.obs) DATA.obs={};
@@ -5005,7 +5016,6 @@ async function _syncCore() {
       const nome=(t.assunto||'').slice(10).trim();
       if(!nome) continue;
 
-      // Refresh from localStorage
       try{ const s=localStorage.getItem('crm_obs'); if(s){const p=JSON.parse(s);if(p[nome])DATA.obs[nome]=p[nome];} }catch(e){}
       try{ const ds=localStorage.getItem('crm_desc'); if(ds){const p=JSON.parse(ds);if(p[nome])DATA.descSaved[nome]=p[nome];} }catch(e){}
       try{ const ss=localStorage.getItem('crm_status'); if(ss){const p=JSON.parse(ss);if(p[nome])DATA.statusSaved[nome]=p[nome];} }catch(e){}
