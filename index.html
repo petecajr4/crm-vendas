@@ -4766,53 +4766,67 @@ function resetImport() {
 
 function abrirObs(nome) {
   const obs = DATA.obs[nome] || '';
-  document.getElementById('obsContent').innerHTML = `
+  const content = document.getElementById('obsContent');
+  content.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div>
         <div style="font-size:10px;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px">📝 Anotação</div>
-        <div style="font-size:16px;font-weight:800">${nome}</div>
+        <div id="obs-modal-nome" style="font-size:16px;font-weight:800"></div>
       </div>
       <button onclick="fecharObs()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer">✕</button>
     </div>
-    <textarea id="obs-texto" placeholder="Ex: Ligamos dia 01/01/2026 - cliente comprou máquina e não tem mais interesse em revenda..." rows="5"
-      style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:13px;font-family:'Syne',sans-serif;resize:vertical;box-sizing:border-box;line-height:1.5">${obs}</textarea>
+    <textarea id="obs-texto" rows="5"
+      style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-size:13px;font-family:'Syne',sans-serif;resize:vertical;box-sizing:border-box;line-height:1.5"></textarea>
     <div style="display:flex;gap:8px;margin-top:10px">
-      <button onclick="salvarObs('${nome.replace(/'/g, "\'")}')"
+      <button id="btn-salvar-obs"
         style="flex:1;background:var(--accent);border:none;border-radius:6px;padding:9px;color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:'Syne',sans-serif">
         💾 Salvar
       </button>
-      ${obs ? `<button onclick="limparObs('${nome.replace(/'/g, "\'")}')"
-        style="background:rgba(247,92,92,.15);border:1px solid rgba(247,92,92,.3);border-radius:6px;padding:9px 14px;color:var(--danger);font-size:13px;cursor:pointer;font-family:'Syne',sans-serif">
-        🗑️
-      </button>` : ''}
+      <button id="btn-limpar-obs"
+        style="display:${obs?'inline-block':'none'};background:rgba(247,92,92,.15);border:1px solid rgba(247,92,92,.3);border-radius:6px;padding:9px 14px;color:var(--danger);font-size:13px;cursor:pointer;font-family:'Syne',sans-serif">
+        🗑️ Limpar tudo
+      </button>
     </div>
     <div id="obs-feedback" style="margin-top:8px;font-size:11px;color:var(--accent3);text-align:center;min-height:16px"></div>
   `;
+  document.getElementById('obs-modal-nome').textContent = nome;
+  document.getElementById('obs-texto').value = obs;
+  document.getElementById('obs-texto').placeholder = 'Ex: Ligamos dia 01/01/2026 - cliente comprou máquina...';
+  document.getElementById('btn-salvar-obs').onclick = () => salvarObs(nome);
+  document.getElementById('btn-limpar-obs').onclick = () => limparObs(nome);
   document.getElementById('obsModal').style.display = 'flex';
   setTimeout(() => document.getElementById('obs-texto')?.focus(), 100);
 }
-
 function fecharObs() {
   document.getElementById('obsModal').style.display = 'none';
-  // Rebuild cidade table to show updated annotation
   try { if(cidadeAtual && !['Geral'].includes(cidadeAtual)) buildCidadeOutra(cidadeAtual); } catch(e){}
+  try { buildClientsTable(); } catch(e){}
 }
 
 function salvarObs(nome) {
   const texto = document.getElementById('obs-texto').value.trim();
   if (texto) {
     DATA.obs[nome] = texto;
+    if (DATA.obsDeletedByUser) delete DATA.obsDeletedByUser[nome];
+    try { localStorage.setItem('crm_obs_deleted', JSON.stringify(DATA.obsDeletedByUser||{})); } catch(e){}
   } else {
     delete DATA.obs[nome];
+    if (!DATA.obsDeletedByUser) DATA.obsDeletedByUser = {};
+    DATA.obsDeletedByUser[nome] = Date.now();
+    try { localStorage.setItem('crm_obs_deleted', JSON.stringify(DATA.obsDeletedByUser)); } catch(e){}
   }
   persistObs();
   const fb = document.getElementById('obs-feedback');
-  if (fb) fb.textContent = '✅ Anotação salva!';
+  if (fb) { fb.style.color = 'var(--accent3)'; fb.textContent = '✅ Anotação salva!'; }
   setTimeout(fecharObs, 800);
 }
 
 function limparObs(nome) {
   delete DATA.obs[nome];
+  if (!DATA.obsDeletedByUser) DATA.obsDeletedByUser = {};
+  DATA.obsDeletedByUser[nome] = Date.now();
+  try { localStorage.setItem('crm_obs_deleted', JSON.stringify(DATA.obsDeletedByUser)); } catch(e){}
+  persistObs();
   fecharObs();
 }
 
@@ -5316,6 +5330,8 @@ async function _syncCore() {
     try { localObs   = JSON.parse(localStorage.getItem('crm_obs')    || '{}'); } catch(e){}
     try { localDesc  = JSON.parse(localStorage.getItem('crm_desc')   || '{}'); } catch(e){}
     try { localStatus= JSON.parse(localStorage.getItem('crm_status') || '{}'); } catch(e){}
+    if (!DATA.obsDeletedByUser) DATA.obsDeletedByUser = {};
+    try { Object.assign(DATA.obsDeletedByUser, JSON.parse(localStorage.getItem('crm_obs_deleted') || '{}')); } catch(e){}
     Object.assign(DATA.obs,        localObs);
     Object.assign(DATA.descSaved   ||= {}, localDesc);
     Object.assign(DATA.statusSaved ||= {}, localStatus);
@@ -5349,6 +5365,15 @@ async function _syncCore() {
       if (localObs[nome])    DATA.obs[nome]          = localObs[nome];
       if (localDesc[nome])   DATA.descSaved[nome]    = localDesc[nome];
       if (localStatus[nome]) DATA.statusSaved[nome]  = localStatus[nome];
+
+      // Se usuário limpou manualmente, pula — não restaura do TicketFlow
+      if (DATA.obsDeletedByUser && DATA.obsDeletedByUser[nome]) {
+        DATA.statusSaved[nome] = t.status || 'aberto';
+        localStatus[nome] = t.status || 'aberto';
+        DATA.descSaved[nome] = (t.desc || '').trim();
+        localDesc[nome] = (t.desc || '').trim();
+        return; // forEach usa return em vez de continue
+      }
 
       let obs = DATA.obs[nome] || '';
       let changed = false;
@@ -5420,6 +5445,8 @@ async function sincronizarTickets() {
 }
 
 async function sincronizarTicketsSilencioso() {
+  const obsModal = document.getElementById('obsModal');
+  if (obsModal && obsModal.style.display === 'flex') return;
   const n=await _syncCore();
   const el=document.getElementById('syncStatus');
   const h=new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
