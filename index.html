@@ -614,6 +614,9 @@
       <div style="font-size:13px;color:var(--muted);margin-top:4px">Quem compra o quê · 26 produtos · 258 clientes</div>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
+      <div class="year-tabs" id="prodYearTabs">
+        <div class="year-tab active" onclick="setProdYear('all',this)">Todos</div>
+      </div>
       <div class="year-tabs">
         <div class="year-tab active" id="ptab-produto" onclick="switchProdView('produto',this)">Por Produto</div>
         <div class="year-tab" id="ptab-cliente" onclick="switchProdView('cliente',this)">Por Cliente</div>
@@ -3078,6 +3081,75 @@ function consolidarProdutos() {
   PROD_SUMMARY.sort((a,b) => b.qtd - a.qtd);
 }
 
+let selectedProdYears = new Set(); // vazio = todos os anos
+
+function setProdYear(year, el) {
+  if (year === 'all') {
+    selectedProdYears.clear();
+    document.querySelectorAll('#prodYearTabs .year-tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+  } else {
+    const todosBtn = document.querySelector('#prodYearTabs .year-tab:first-child');
+    if (todosBtn) todosBtn.classList.remove('active');
+    if (selectedProdYears.has(year)) {
+      selectedProdYears.delete(year);
+      el.classList.remove('active');
+    } else {
+      selectedProdYears.add(year);
+      el.classList.add('active');
+    }
+    if (selectedProdYears.size === 0 && todosBtn) todosBtn.classList.add('active');
+  }
+  if (prodView === 'produto') renderProdView();
+  else renderClienteProdView();
+}
+
+function buildProdYearTabs() {
+  const container = document.getElementById('prodYearTabs');
+  if (!container || container.children.length > 1) return;
+  const years = [...new Set(Object.keys(DATA.monthly).map(m => m.split('/')[1]))].sort();
+  years.forEach(y => {
+    const btn = document.createElement('div');
+    btn.className = 'year-tab';
+    btn.textContent = y;
+    btn.onclick = function() { setProdYear(y, this); };
+    container.appendChild(btn);
+  });
+}
+
+// Filtra clientes de um produto pelos anos selecionados usando historico
+function filtrarClientesPorAno(clientesArr) {
+  if (!selectedProdYears || selectedProdYears.size === 0) return clientesArr;
+  return clientesArr.map(entry => {
+    const cli = DATA && DATA.clients ? DATA.clients.find(x => x.nome === entry.c) : null;
+    if (!cli || !cli.historico) return null;
+    const hist = cli.historico.filter(h => selectedProdYears.has(h.mes.split('/')[1]));
+    if (!hist.length) return null;
+    const q = hist.reduce((s, h) => s + h.qtd, 0);
+    const t = Math.round(hist.reduce((s, h) => s + h.vlr, 0) * 100) / 100;
+    return { c: entry.c, q, t };
+  }).filter(Boolean).sort((a, b) => b.q - a.q);
+}
+
+// Filtra produtos de um cliente por ano (proporcional, pois nao ha dados granulares produto/ano)
+function filtrarProdsPorAnoCliente(nome) {
+  const prods = getClienteProdData(nome);
+  if (!selectedProdYears || selectedProdYears.size === 0) return prods;
+  const cli = DATA && DATA.clients ? DATA.clients.find(x => x.nome === nome) : null;
+  if (!cli || !cli.historico) return prods;
+  const hist = cli.historico.filter(h => selectedProdYears.has(h.mes.split('/')[1]));
+  if (!hist.length) return [];
+  const totalFiltrado = Math.round(hist.reduce((s, h) => s + h.vlr, 0) * 100) / 100;
+  const qtdFiltrada = hist.reduce((s, h) => s + h.qtd, 0);
+  const totalGeral = prods.reduce((s, p) => s + p.t, 0) || 1;
+  const qtdGeral = prods.reduce((s, p) => s + p.q, 0) || 1;
+  return prods.map(p => ({
+    p: p.p,
+    q: Math.round(p.q * qtdFiltrada / qtdGeral),
+    t: Math.round(p.t / totalGeral * totalFiltrado * 100) / 100
+  })).filter(p => p.q > 0).sort((a, b) => b.q - a.q);
+}
+
 function switchProdView(mode, el) {
   prodView = mode;
   document.querySelectorAll('#ptab-produto,#ptab-cliente').forEach(t=>t.classList.remove('active'));
@@ -3105,17 +3177,22 @@ function selectProd(nome, el) {
 }
 
 function renderProdView() {
+  buildProdYearTabs();
   consolidarProdutos(); // garante que produtos importados estejam agrupados
   buildProdPills();
   const s = PROD_SUMMARY.find(p=>p.produto===selectedProd) || PROD_SUMMARY[0];
-  const ticket = (s.total/s.qtd).toFixed(2);
-  document.getElementById('pi-qtd').textContent = s.qtd;
-  document.getElementById('pi-total').textContent = 'R$ ' + s.total.toLocaleString('pt-BR',{minimumFractionDigits:2});
-  document.getElementById('pi-clientes').textContent = s.clientes;
+
+  // Aplica filtro de ano nos clientes
+  const clientesRaw = (POR_PRODUTO[selectedProd] || []).filter(c => c.c && c.c !== '—');
+  const clientes = filtrarClientesPorAno(clientesRaw);
+
+  const ticket = clientes.length ? (clientes.reduce((s,c)=>s+c.t,0)/clientes.reduce((s,c)=>s+c.q,0)).toFixed(2) : (s.total/s.qtd).toFixed(2);
+  document.getElementById('pi-qtd').textContent = selectedProdYears.size ? clientes.reduce((s,c)=>s+c.q,0) : s.qtd;
+  document.getElementById('pi-total').textContent = 'R$ ' + (selectedProdYears.size ? clientes.reduce((s,c)=>s+c.t,0) : s.total).toLocaleString('pt-BR',{minimumFractionDigits:2});
+  document.getElementById('pi-clientes').textContent = selectedProdYears.size ? clientes.length : s.clientes;
   document.getElementById('pi-ticket').textContent = 'R$ ' + parseFloat(ticket).toLocaleString('pt-BR',{minimumFractionDigits:2});
   document.getElementById('prodCliTitle').textContent = `Clientes que compram ${selectedProd}`;
 
-  const clientes = (POR_PRODUTO[selectedProd] || []).filter(c => c.c && c.c !== '—');
   const maxQ = clientes[0]?.q || 1;
 
   document.getElementById('prodCliList').innerHTML = clientes.length === 0
@@ -3163,7 +3240,14 @@ function renderProdView() {
 
 function buildClienteProdPills() {
   const search = (document.getElementById('prodCliSearch')?.value||'').toLowerCase();
-  const clientes = Object.keys(POR_CLIENTE).filter(c=>c && c!=='—' && (!search||c.toLowerCase().includes(search)));
+  // Usa todos os clientes com compras: POR_CLIENTE estático + clientes de DATA.clients com qtd > 0
+  const fromData = (DATA && DATA.clients ? DATA.clients : [])
+    .filter(c => c.nome && c.nome !== '—' && c.qtd > 0)
+    .map(c => c.nome);
+  const fromPorCliente = Object.keys(POR_CLIENTE).filter(c => c && c !== '—');
+  // Une os dois conjuntos sem duplicatas
+  const todos = [...new Set([...fromPorCliente, ...fromData])].sort();
+  const clientes = todos.filter(c => !search || c.toLowerCase().includes(search));
   document.getElementById('clienteProdPills').innerHTML = clientes.map(c=>`
     <div class="filter-pill ${c===selectedCliProd?'active':''}"
       onclick="selectCliProd('${c.replace(/'/g,"\\'")}', this)">
@@ -3171,13 +3255,28 @@ function buildClienteProdPills() {
     </div>`).join('');
 }
 
+function getClienteProdData(nome) {
+  // Primeiro tenta POR_CLIENTE (dados detalhados por produto)
+  if (POR_CLIENTE[nome] && POR_CLIENTE[nome].length) return POR_CLIENTE[nome];
+  // Fallback: busca em DATA.clients e constrói entrada com top_prod
+  if (DATA && DATA.clients) {
+    const c = DATA.clients.find(x => x.nome === nome);
+    if (c && c.top_prod && c.top_prod !== '—') {
+      return [{ p: normalizarProduto(c.top_prod), q: c.qtd, t: c.total }];
+    }
+  }
+  return [];
+}
+
 function renderClienteProdView() {
+  buildProdYearTabs();
   if (!selectedCliProd || selectedCliProd === '—') {
-    const firstCli = Object.keys(POR_CLIENTE).find(c => c && c !== '—');
+    const firstCli = Object.keys(POR_CLIENTE).find(c => c && c !== '—')
+      || (DATA && DATA.clients && DATA.clients.find(c => c.qtd > 0))?.nome;
     if (firstCli) selectedCliProd = firstCli;
   }
   buildClienteProdPills();
-  const prods = POR_CLIENTE[selectedCliProd] || [];
+  const prods = filtrarProdsPorAnoCliente(selectedCliProd);
   const sorted = [...prods].sort((a,b)=>b.q-a.q);
   const maxQ = sorted[0]?.q || 1;
   document.getElementById('cliProdTitle').textContent = `Produtos comprados por ${selectedCliProd}`;
