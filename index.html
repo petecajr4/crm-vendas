@@ -426,6 +426,7 @@
       <div class="page-title">Dashboard <span>Geral</span></div>
       <div style="display:flex;align-items:center;gap:10px;margin-top:4px">
         <div style="font-size:13px;color:var(--muted)">2024–2026</div>
+        <div style="font-size:10px;color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:4px;padding:2px 7px;font-family:'Syne',sans-serif;font-weight:700;letter-spacing:.5px">v2.5 · 14/04/2026</div>
         <button id="btnSyncTickets" onclick="sincronizarTickets()" style="background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.25);color:var(--accent);border-radius:6px;padding:4px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Syne',sans-serif">🔄 Sync Tickets</button>
         <span id="syncStatus" style="font-size:10px;color:var(--muted)"></span>
       </div>
@@ -519,6 +520,7 @@
       <div class="page-title">Vendas por <span>Cidade</span></div>
       <div style="display:flex;align-items:center;gap:10px;margin-top:4px">
         <div style="font-size:13px;color:var(--muted)">2024–2026</div>
+        <div style="font-size:10px;color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:4px;padding:2px 7px;font-family:'Syne',sans-serif;font-weight:700;letter-spacing:.5px">v2.5 · 14/04/2026</div>
         <button id="btnSyncTickets" onclick="sincronizarTickets()" style="background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.25);color:var(--accent);border-radius:6px;padding:4px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Syne',sans-serif">🔄 Sync Tickets</button>
         <span id="syncStatus" style="font-size:10px;color:var(--muted)"></span>
       </div>
@@ -2982,6 +2984,11 @@ function buildProductsChart() {
 const PROD_SUMMARY = DATA.products;
 
 // POR_PRODUTO built dynamically from DATA.clients historico
+// Verifica se cliente está ativo (não consta nos inativos confirmados)
+function isAtivo(nome) {
+  return !inativosConfirmados[nome];
+}
+
 // Since historico is monthly (not per product), we use top_prod per client as proxy
 // For accurate per-product client ranking, use the hardcoded base + consolidarProdutos
 const POR_PRODUTO = (function() {
@@ -2991,6 +2998,7 @@ const POR_PRODUTO = (function() {
   // For each client, add them to their top product
   DATA.clients.forEach(c => {
     if (!c.total || c.total === 0 || !c.top_prod || c.top_prod === '—') return;
+    if (!isAtivo(c.nome)) return;  // oculta inativos
     const prod = c.top_prod;
     if (!result[prod]) result[prod] = [];
     result[prod].push({ c: c.nome, q: c.qtd, t: c.total });
@@ -3075,7 +3083,7 @@ function recalcProdByYear() {
   // Filtra clientes ativos nos anos selecionados usando historico
   const clientesAtivos = new Set();
   DATA.clients.forEach(c => {
-    if (c.historico && c.historico.some(h => selectedProdYears.has(h.mes.split('/')[1]))) {
+    if (c.historico && isAtivo(c.nome) && c.historico.some(h => selectedProdYears.has(h.mes.split('/')[1]))) {
       clientesAtivos.add(c.nome);
     }
   });
@@ -3084,6 +3092,7 @@ function recalcProdByYear() {
   Object.keys(POR_CLIENTE).forEach(k => delete POR_CLIENTE[k]);
   DATA.clients.forEach(c => {
     if (!clientesAtivos.has(c.nome)) return;
+    if (!isAtivo(c.nome)) return;  // oculta inativos
     const hAno = c.historico.filter(h => selectedProdYears.has(h.mes.split('/')[1]));
     if (!hAno.length) return;
     const vlrAno = hAno.reduce((s, h) => s + h.vlr, 0);
@@ -3782,7 +3791,7 @@ function buildGeralCharts() {
   if(chartGeralComp) chartGeralComp.destroy();
   chartGeralComp = new Chart(ctx1,{type:'bar',data:{labels,datasets:[{label:'Total',data:values,backgroundColor:'rgba(79,142,247,.6)',borderRadius:3}]},options:{responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>'R$ '+c.raw.toLocaleString('pt-BR',{minimumFractionDigits:2})}}},scales:{y:{ticks:{color:'#6b7699',callback:v=>'R$'+(v/1e3).toFixed(0)+'k'},grid:{color:'rgba(37,42,58,.5)'}},x:{ticks:{color:'#6b7699',maxTicksLimit:14},grid:{display:false}}}}});
   const fatCidade={};
-  DATA.clients.forEach(c=>{if(c.total>0){const cid=c.cidade||'Outros';fatCidade[cid]=(fatCidade[cid]||0)+c.total;}});
+  DATA.clients.forEach(c=>{if(c.total>0 && isAtivo(c.nome)){const cid=c.cidade||'Outros';fatCidade[cid]=(fatCidade[cid]||0)+c.total;}});
   const topC=Object.entries(fatCidade).sort((a,b)=>b[1]-a[1]).slice(0,8);
   const ctx2 = document.getElementById('chartGeralPizza');
   if(chartGeralPizza) chartGeralPizza.destroy();
@@ -3856,21 +3865,23 @@ function statusClass(s) {
 
 // Helper global — todos os clientes
 function allClients() {
-  return DATA.clients.map(c => {
-    let dias_inativo = null, status = 'Sem vendas', sem_vendas = true;
-    if (c.ultima_compra) {
-      const p = c.ultima_compra.split('/');
-      const ultima = new Date(+p[2], +p[1]-1, +p[0]);
-      dias_inativo = Math.floor((new Date() - ultima) / 86400000);
-      sem_vendas = false;
-      if (dias_inativo <= 15) status = '0-15 dias';
-      else if (dias_inativo <= 30) status = '16-30 dias';
-      else if (dias_inativo <= 60) status = '31-60 dias';
-      else if (dias_inativo <= 90) status = '61-90 dias';
-      else status = 'Abandonado';
-    }
-    return {...c, dias_inativo, status, sem_vendas};
-  });
+  return DATA.clients
+    .filter(c => isAtivo(c.nome))  // oculta inativos em todo o sistema
+    .map(c => {
+      let dias_inativo = null, status = 'Sem vendas', sem_vendas = true;
+      if (c.ultima_compra) {
+        const p = c.ultima_compra.split('/');
+        const ultima = new Date(+p[2], +p[1]-1, +p[0]);
+        dias_inativo = Math.floor((new Date() - ultima) / 86400000);
+        sem_vendas = false;
+        if (dias_inativo <= 15) status = '0-15 dias';
+        else if (dias_inativo <= 30) status = '16-30 dias';
+        else if (dias_inativo <= 60) status = '31-60 dias';
+        else if (dias_inativo <= 90) status = '61-90 dias';
+        else status = 'Abandonado';
+      }
+      return {...c, dias_inativo, status, sem_vendas};
+    });
 }
 function allClientsWithSales() {
   return allClients().filter(c => !c.sem_vendas && c.total > 0);
@@ -4168,6 +4179,7 @@ function buildFluxoData() {
   const cli = {}, prod = {};
   DATA.clients.forEach(c=>{
     if(!c.historico||!c.historico.length) return;
+    if(!isAtivo(c.nome)) return;  // oculta inativos no fluxo
     if(!cli[c.nome]) cli[c.nome]=new Array(n).fill(0);
     c.historico.forEach(h=>{
       const i=mIdx[h.mes];
@@ -4430,7 +4442,7 @@ function buildFluxoBar(months, totals) {
   });
 }
 
-let _syncInterval = null;
+var _syncInterval = null;
 
 function showPage(page) {
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
@@ -4481,6 +4493,7 @@ function buildCrossData() {
   const cross = {};
   DATA.clients.forEach(c=>{
     if(!c.total||c.total===0) return;
+    if(!isAtivo(c.nome)) return;  // oculta inativos no cruzamento
     const nome = c.nome;
     cross[nome] = {};
     if(c.top_prod&&c.top_prod!=='—') {
@@ -5298,8 +5311,28 @@ function getClienteStatusReal(nome) {
 function buildClientsTableWithInativacao() {
   const tbody = document.getElementById('clientsBody');
 
-  // Combina Jales + Andradina, adicionando cidade a cada cliente
-  let source = allClients().sort((a,b) => b.total - a.total);
+  // Para o filtro "inativo", usa DATA.clients completo (inclui inativos)
+  // Para todos os outros filtros, usa allClients() que já exclui inativos
+  let source;
+  if (currentFilter === 'inativo') {
+    source = DATA.clients.map(c => {
+      let dias_inativo = null, status = 'Sem vendas', sem_vendas = true;
+      if (c.ultima_compra) {
+        const p = c.ultima_compra.split('/');
+        const ultima = new Date(+p[2], +p[1]-1, +p[0]);
+        dias_inativo = Math.floor((new Date() - ultima) / 86400000);
+        sem_vendas = false;
+        if (dias_inativo <= 15) status = '0-15 dias';
+        else if (dias_inativo <= 30) status = '16-30 dias';
+        else if (dias_inativo <= 60) status = '31-60 dias';
+        else if (dias_inativo <= 90) status = '61-90 dias';
+        else status = 'Abandonado';
+      }
+      return {...c, dias_inativo, status, sem_vendas};
+    }).sort((a,b) => b.total - a.total);
+  } else {
+    source = allClients().sort((a,b) => b.total - a.total);
+  }
 
   let filtered = source;
 
